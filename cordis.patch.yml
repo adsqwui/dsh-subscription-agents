@@ -1,0 +1,4 @@
+- insert:
+    - id: subscription-agents
+      name: '@local/dsh-subscription-agents'
+      config: {}

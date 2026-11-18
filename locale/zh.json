@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "订阅智能体",
+    "description": "连接本地 Codex 和 Claude Code 账号，检查 CLI 访问及用量，并委派文本子任务。"
+  }
+}
