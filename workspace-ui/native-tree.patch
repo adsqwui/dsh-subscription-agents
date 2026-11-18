@@ -1,0 +1,457 @@
+diff --git a/src/client/contract/slots.ts b/src/client/contract/slots.ts
+index bb704633..3378741e 100644
+--- a/src/client/contract/slots.ts
++++ b/src/client/contract/slots.ts
+@@ -47,7 +47,7 @@ import type {
+ import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
+ import type { EmptyWorkspaceOwnerProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
+ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
+-import type { SessionSearchResultItem } from '@deepseek-ai/dsh-api-session-controller/client'
++import type { SessionSearchResultItem, SessionTarget } from '@deepseek-ai/dsh-api-session-controller/client'
+ import type { RemoteHostFacts } from '@deepseek-ai/dsh-api-remotes/client'
+ import type { SessionActivity, WorkspaceId, WorkspaceView } from '@deepseek-ai/dsh-api-workspace-controller/client'
+ import type { SessionId } from '@deepseek-ai/dsh-session/types'
+@@ -300,8 +300,8 @@ export type WorkspaceBrowserInjected = {
+    * then the recent Workspace, or clear into the New Session view.
+    */
+   startSession: (workspaceId?: WorkspaceId, options?: StartSessionOptions) => void
+-  /** Open a real Session. */
+-  open: (sessionId: SessionId) => void
++  /** Open a real Session or a continuable direct child address. */
++  open: (target: SessionTarget) => void
+   /**
+    * Search current visible conversation messages. The Host fixes the result
+    * bound; `hasMore` means the query needs narrowing.
+diff --git a/src/client/rows/Rows.module.css b/src/client/rows/Rows.module.css
+index 7f567fc7..16481f77 100644
+--- a/src/client/rows/Rows.module.css
++++ b/src/client/rows/Rows.module.css
+@@ -170,6 +170,70 @@
+   transform: rotate(90deg);
+ }
+ 
++.childDisclosure {
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++  width: 16px;
++  height: 20px;
++  padding: 0;
++  border: 0;
++  background: transparent;
++  color: inherit;
++  cursor: pointer;
++}
++
++.childGroup {
++  position: relative;
++}
++
++.childRow {
++  display: flex;
++  align-items: center;
++  height: 28px;
++  box-sizing: border-box;
++  padding-inline: calc(var(--dsh-sidebar-row-padding) - var(--dsh-sidebar-paint-inset) + var(--dsh-workspace-indent, 0px)) 8px;
++  border-inline: var(--dsh-sidebar-paint-inset) solid transparent;
++  border-radius: var(--dsw-radius-md);
++  cursor: pointer;
++  color: var(--dsw-alias-label-secondary);
++}
++
++@media (hover: hover) {
++  .childRow:hover {
++    background-color: var(--dsw-alias-interactive-bg-hover);
++  }
++}
++
++.childRow.selected {
++  background-color: var(--dsw-alias-interactive-bg-hover);
++}
++
++.childBranch {
++  align-self: stretch;
++  width: 22px;
++  margin-left: 7px;
++  border-left: 0.5px solid var(--dsw-alias-border-l4);
++}
++
++.childStatus {
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++  flex: none;
++  width: 16px;
++}
++
++.childTitle {
++  min-width: 0;
++  margin-left: var(--dsh-sidebar-label-gap);
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++  font-size: 13px;
++  line-height: 20px;
++}
++
+ .projectText {
+   flex: 1;
+   min-width: 0;
+diff --git a/src/client/rows/Rows.tsx b/src/client/rows/Rows.tsx
+index e2094eea..f8e2f362 100644
+--- a/src/client/rows/Rows.tsx
++++ b/src/client/rows/Rows.tsx
+@@ -9,7 +9,7 @@
+  * `sidebar.workspaces.session.row.action` list. Session and Workspace
+  * hover cards are suppressed while their menu is open.
+  */
+-import { useEffect, useMemo, useRef } from 'react'
++import { useEffect, useId, useMemo, useRef, useState } from 'react'
+ import type { PointerEvent, RefObject } from 'react'
+ import clsx from 'clsx'
+ import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
+@@ -24,7 +24,7 @@ import type { StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
+ import { abbreviateHomePath } from '@deepseek-ai/dsh-util-workspace-path'
+ import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
+ import type { WorkspaceBrowserProps } from '../contract/slots.ts'
+-import type { GroupNode, SearchResultNode, SessionNode } from '../tree.ts'
++import type { ChildSessionNode, GroupNode, SearchResultNode, SessionNode } from '../tree.ts'
+ import css from './Rows.module.css'
+ 
+ /** Sidebar-owned layout values needed by row copies mounted outside the sidebar. */
+@@ -598,7 +598,7 @@ export function SearchResultItem({
+  */
+ export function SessionNodeItem({
+   node, currentId, now, onOpen, onRenameRequest, renderSlot, renderFactorySlot, useContextMenuTarget,
+-  useContextMenu, onReveal, drag, home, useSessionAccess, t,
++  useContextMenu, onOpenChild, onReveal, drag, home, useSessionAccess, t,
+ }: {
+   useContextMenu: WorkspaceBrowserProps['useContextMenu']
+   renderFactorySlot: WorkspaceBrowserProps['renderFactorySlot']
+@@ -607,6 +607,8 @@ export function SessionNodeItem({
+   currentId: string | undefined
+   now: number
+   onOpen: (id: SessionNode['id']) => void
++  /** Open a continuable direct child through its durable parent address. */
++  onOpenChild?: WorkspaceBrowserProps['open']
+   /** Open the rename dialog from a title double-click (id + current title); see the function JSDoc for the press precondition. */
+   onRenameRequest: (id: SessionNode['id'], currentTitle: string) => void
+   /** Scroll this row into view after search navigation, then acknowledge it. */
+@@ -624,8 +626,14 @@ export function SessionNodeItem({
+ >) {
+   const { getTriggerProps } = useContextMenu()
+   const row = node
++  const children = row.children ?? []
+   const title = displayTitle(node, t)
+   const selected = node.id === currentId
++  const [childrenExpanded, setChildrenExpanded] = useState(true)
++  const childSelected = children.some(child => child.id === currentId)
++  const expanded = childSelected || childrenExpanded
++  const childGroupId = useId()
++  const hasChildGroup = !row.archived && children.length > 0 && onOpenChild !== undefined
+   const statuses = sessionStatuses(node, t)
+   const primaryStatus = statuses[0]
+   const showStatus = primaryStatus.state !== 'idle'
+@@ -665,6 +673,9 @@ export function SessionNodeItem({
+       )}
+       role="treeitem"
+       aria-selected={selected}
++      aria-expanded={hasChildGroup ? expanded : undefined}
++      aria-controls={hasChildGroup ? childGroupId : undefined}
++      aria-owns={hasChildGroup ? childGroupId : undefined}
+       aria-description={row.archived ? t('toast.archivedNotOpenable') : undefined}
+       tabIndex={0}
+ 
+@@ -708,6 +719,21 @@ export function SessionNodeItem({
+           and clears after the visible content is acknowledged. Archived rows keep the slot
+           blank — the grayed row carries the archived look — and their live
+           status stays on the hover card only. */}
++      {!row.archived && !row.blank && children.length > 0 && onOpenChild !== undefined && (
++        <button
++          type="button"
++          className={css.childDisclosure}
++          aria-label={t(expanded ? 'sessions.collapse' : 'sessions.expand', { n: children.length })}
++          aria-expanded={expanded}
++          aria-controls={childGroupId}
++          onClick={(event) => {
++            event.stopPropagation()
++            setChildrenExpanded(expanded => !expanded)
++          }}
++        >
++          <IconTriangleRightFillRegular size={10} className={clsx(css.arrow, expanded && css.arrowOpen)} />
++        </button>
++      )}
+       <span className={css.slot}>
+         {!row.archived && !row.blank && (showStatus
+           ? <SessionStatusDots statuses={statuses} />
+@@ -765,21 +791,68 @@ export function SessionNodeItem({
+     </div>
+   )
+   return (
+-    <HoverCard
+-      anchor={ownRow}
+-      content={<SessionHoverContent
+-        node={node}
+-        cwd={row.cwd === undefined ? undefined : abbreviateHomePath(row.cwd, home)}
+-        now={now}
+-        renderSlot={renderSlot}
+-        t={t}
+-      />}
+-      openDelayMs={800}
+-      grouped
+-      disabled={menuOpen || drag?.active === true}
+-      copyText={row.blank || row.title === '' ? undefined : row.title}
+-      copyLabel={t('copy')}
+-      copiedLabel={t('hover.copied')}
+-    />
++    <>
++      <HoverCard
++        anchor={ownRow}
++        content={<SessionHoverContent
++          node={node}
++          cwd={row.cwd === undefined ? undefined : abbreviateHomePath(row.cwd, home)}
++          now={now}
++          renderSlot={renderSlot}
++          t={t}
++        />}
++        openDelayMs={800}
++        grouped
++        disabled={menuOpen || drag?.active === true}
++        copyText={row.blank || row.title === '' ? undefined : row.title}
++        copyLabel={t('copy')}
++        copiedLabel={t('hover.copied')}
++      />
++      {!row.archived && onOpenChild !== undefined && expanded && children.length > 0 && (
++        <div id={childGroupId} className={css.childGroup} role="group">
++          {children.map(child => (
++            <ChildSessionItem
++              key={child.id}
++              child={child}
++              parentId={row.id}
++              selected={child.id === currentId}
++              onOpen={onOpenChild}
++              t={t}
++            />
++          ))}
++        </div>
++      )}
++    </>
++  )
++}
++
++/** One compact continuable child row beneath its direct parent. */
++function ChildSessionItem({ child, parentId, selected, onOpen, t }: {
++  child: ChildSessionNode
++  parentId: SessionNode['id']
++  selected: boolean
++  onOpen: WorkspaceBrowserProps['open']
++  t: RowTranslate
++}) {
++  const title = child.title || t('session.untitled')
++  const open = (): void => { onOpen({ parentSessionId: parentId, childSessionId: child.id, mode: 'continuable' }) }
++  return (
++    <div
++      className={clsx(css.childRow, selected && css.selected)}
++      role="treeitem"
++      aria-selected={selected}
++      tabIndex={0}
++      onClick={open}
++      onKeyDown={(event) => {
++        if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return
++        if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
++        event.preventDefault()
++        open()
++      }}
++    >
++      <span className={css.childBranch} aria-hidden="true" />
++      <span className={css.childStatus}>{child.running && <StateDot state="ongoing" />}</span>
++      <span className={css.childTitle}>{title}</span>
++    </div>
+   )
+ }
+diff --git a/src/client/rows/WorkspaceBrowser.tsx b/src/client/rows/WorkspaceBrowser.tsx
+index d852662c..03de0144 100644
+--- a/src/client/rows/WorkspaceBrowser.tsx
++++ b/src/client/rows/WorkspaceBrowser.tsx
+@@ -34,7 +34,7 @@ import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
+ import type { WorkspaceBrowserProps } from '../contract/slots.ts'
+ import type { ArchivedFilter, GroupNode, SessionNode, SessionOrderBy, SessionRowState } from '../tree.ts'
+ import {
+-  deriveFlat, deriveGroups, deriveSearchResults, orderByRecency, sessionSearchIndex, owningGroupKey, owningParentFolder,
++  browserRootSessionId, deriveFlat, deriveGroups, deriveSearchResults, orderByRecency, sessionSearchIndex, owningGroupKey, owningParentFolder,
+   pinCurrentBlank, reconcileManualOrder, sessionMemberIds, UNGROUPED_KEY,
+ } from '../tree.ts'
+ import { ProjectRowItem, SearchResultItem, SessionNodeItem } from './Rows.tsx'
+@@ -252,7 +252,7 @@ function workspaceGroupHalf(e: { clientY: number; currentTarget: HTMLElement }):
+ 
+ type SessionTreeProps = Pick<
+   WorkspaceBrowserProps,
+-  'useSessionStatus' | 'startSession' | 'open' | 'renderFactorySlot' | 'useContextMenuTarget' | 'useContextMenu'
++  'useSessionStatus' | 'startSession' | 'renderFactorySlot' | 'useContextMenuTarget' | 'useContextMenu'
+   | 'insertWorkspaceBefore' | 't' | 'usePanelInfo'
+   | 'useSessionAccess' | 'useWorkspaceAccess'
+ > & PropsRenderSlots<
+@@ -261,6 +261,10 @@ type SessionTreeProps = Pick<
+   | 'sidebar.session.row.leading'
+   | 'sidebar.session.row.hover'
+ > & {
++  /** Open an ordinary top-level Session. */
++  open: (sessionId: SessionId) => void
++  /** Open a continuable direct child through its durable parent address. */
++  openChild: WorkspaceBrowserProps['open']
+   shortcuts: readonly import('@deepseek-ai/dsh-client-shortcuts/client').ShortcutCatalogEntry[]
+   /** Always-mounted Session list snapshot. */
+   list: SessionListState
+@@ -312,7 +316,7 @@ function EmptySessions({ rowState, onLeaveArchivedOnly, t }: Pick<SessionTreePro
+ 
+ /** The scrolling session tree; unmounting drops the sessions subscription and the session watermarks. */
+ function SessionTree({
+-  list, useSessionStatus, startSession, open, workspaces, ungroupedSessionIds,
++  list, useSessionStatus, startSession, open, openChild, workspaces, ungroupedSessionIds,
+   rowState, onLeaveArchivedOnly,
+   workspaceReady, animationResetKey, usePanelInfo, useSessionAccess, useWorkspaceAccess,
+   onSessionRenameRequest,
+@@ -324,9 +328,10 @@ function SessionTree({
+ }: SessionTreeProps) {
+   const panelActive = usePanelInfo(info => info.activePanelId !== null)
+   const statuses = useSessionStatus(s => s)
+-  const current = panelActive
++  const selected = panelActive
+     ? undefined
+     : Object.values(list.byId).find(session => (session.retainedBy.mainView ?? 0) > 0)?.id
++  const current = selected === undefined ? undefined : browserRootSessionId(list, selected)
+   const revealGroup = revealSessionId === undefined || !workspaceReady
+     ? undefined
+     : owningGroupKey(workspaces, revealSessionId)
+@@ -609,9 +614,10 @@ function SessionTree({
+             <SessionNodeItem
+               key={node.id}
+               node={node}
+-              currentId={current}
++              currentId={selected}
+               now={now}
+               onOpen={open}
++              onOpenChild={openChild}
+               onRenameRequest={onSessionRenameRequest}
+               renderSlot={renderSlot}
+               renderFactorySlot={renderFactorySlot} useContextMenu={useContextMenu}
+@@ -679,11 +685,13 @@ function FlatList({
+   list, sessionIds, rowState, onLeaveArchivedOnly, useSessionStatus, useSessionAccess, open, onSessionRenameRequest,
+   usePanelInfo, setSessionOrder, workspaceReady, animationResetKey,
+   revealSessionId, onSessionRevealed, renderSlot, renderFactorySlot, useContextMenuTarget, useContextMenu, home, t,
++  openChild,
+ }: Pick<
+   SessionTreeProps,
+   | 'useSessionStatus'
+   | 'useSessionAccess'
+   | 'open'
++  | 'openChild'
+   | 'onSessionRenameRequest'
+   | 'renderSlot'
+   | 'renderFactorySlot' | 'useContextMenuTarget' | 'useContextMenu'
+@@ -745,6 +753,7 @@ function FlatList({
+               currentId={currentId}
+               now={now}
+               onOpen={open}
++              onOpenChild={openChild}
+               onRenameRequest={onSessionRenameRequest}
+               renderSlot={renderSlot}
+               renderFactorySlot={renderFactorySlot} useContextMenu={useContextMenu}
+@@ -806,7 +815,8 @@ function SearchResults({
+   usePanelInfo,
+   useSessionAccess,
+   t,
+-}: Pick<WorkspaceBrowserProps, 'useSessions' | 'useSessionStatus' | 'open' | 't' | 'usePanelInfo' | 'useSessionAccess'> & {
++}: Pick<WorkspaceBrowserProps, 'useSessions' | 'useSessionStatus' | 't' | 'usePanelInfo' | 'useSessionAccess'> & {
++  open: (sessionId: SessionId) => void
+   workspaces: readonly WorkspaceView[]
+   archivedSessionIds: readonly SessionNode['id'][]
+   /** Search matches follow the archived filter selected for the list. */
+@@ -1396,6 +1406,7 @@ export function WorkspaceBrowser({
+                 animationResetKey={`${groupBy}/${orderBy}/${archivedFilter}`}
+                 useSessionStatus={useSessionStatus}
+                 open={guardedOpen}
++                openChild={open}
+                 onSessionRenameRequest={requestSessionRename}
+                 renderSlot={renderSlot}
+                 renderFactorySlot={renderFactorySlot} useContextMenu={useContextMenu}
+@@ -1431,6 +1442,7 @@ export function WorkspaceBrowser({
+                 onLeaveArchivedOnly={leaveArchivedOnly}
+                 startSession={startSession}
+                 open={guardedOpen}
++                openChild={open}
+                 insertWorkspaceBefore={insertWorkspaceBefore}
+                 revealSessionId={revealSessionId}
+                 onSessionRevealed={acknowledgeSessionReveal}
+diff --git a/src/client/tree.ts b/src/client/tree.ts
+index 262cf9b2..d97e4a99 100644
+--- a/src/client/tree.ts
++++ b/src/client/tree.ts
+@@ -37,8 +37,26 @@ export type SessionPendingInteractionStatus = 'approval' | 'plan-review' | 'ques
+ type SessionStatuses = SessionStatusSnapshot
+ 
+ function mainSessionId(list: SessionListState): SessionId | undefined {
+-  return Object.values(list.byId)
++  const selected = Object.values(list.byId)
+     .find(session => (session.retainedBy.mainView ?? 0) > 0)?.id
++  return selected === undefined ? undefined : browserRootSessionId(list, selected)
++}
++
++/**
++ * Resolve the ordinary browser row that owns a selected Session.
++ * @param list - Session list and loaded direct-child catalogs.
++ * @param selected - Session retained by the main view.
++ * @returns the direct parent for a catalogued child, otherwise `selected`.
++ */
++export function browserRootSessionId(list: SessionListState, selected: SessionId): SessionId {
++  for (const [parentId, projection] of Object.entries(list.projectionsBySession)) {
++    if (projection.values.subagentCatalog?.some(child => child.id === selected && child.mode === 'continuable') === true) {
++      return parentId as SessionId
++    }
++  }
++  return list.byId[selected]?.origin === 'subagent' && list.byId[selected]?.parentId !== undefined
++    ? list.byId[selected].parentId
++    : selected
+ }
+ 
+ /** One top-level session row in a group or the flat list. */
+@@ -64,6 +82,16 @@ export interface SessionNode {
+   updatedAt: number
+   /** Session working directory; absent when the Host reports none or an empty path. */
+   cwd?: string
++  /** Direct continuable children from this Session's loaded subagent catalog. */
++  children?: readonly ChildSessionNode[]
++}
++
++/** One continuable direct child rendered beneath its parent Session row. */
++export interface ChildSessionNode {
++  id: SessionId
++  /** Catalog label, with an empty value localized by the renderer. */
++  title: string
++  running: boolean
+ }
+ 
+ /** Session order selected by the Workspace browser. */
+@@ -399,6 +427,14 @@ function sessionNode(
+ ): SessionNode {
+   const status = statuses.get(s.id)
+   const pendingInteraction = visiblePendingKind(status?.pendingInteraction?.kind)
++  const children = list.projectionsBySession[s.id]?.values.subagentCatalog?.flatMap((child) => {
++    if (child.mode !== 'continuable') return []
++    return [{
++      id: child.id,
++      title: child.label?.trim() ?? '',
++      running: statuses.get(child.id)?.running ?? list.byId[child.id]?.running ?? false,
++    }]
++  }) ?? []
+   return {
+     id: s.id,
+     title: sessionTitle(s),
+@@ -412,6 +448,7 @@ function sessionNode(
+     updatedAt: s.updatedAt,
+     ...(s.cwd === undefined || s.cwd === '' ? {} : { cwd: s.cwd }),
+     ...(pendingInteraction === undefined ? {} : { pendingInteraction }),
++    children,
+   }
+ }
+ 

@@ -1,4 +1,12 @@
+# The bundle owns the workspace UI replacement; disable it to restore the shipped UI.
+# Fully restart Desktop after changing this service provider.
+# Relative module paths are resolved next to this file, so the bundle can live anywhere.
+- id: ui-workspace
+  disabled: true
 - insert:
+    - id: subscription-workspace-ui
+      name: './workspace-ui/index.js'
+      config: {}
     - id: subscription-agents
       name: '@local/dsh-subscription-agents'
       config: {}
