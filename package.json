@@ -1,8 +1,10 @@
 {
   "name": "@local/dsh-subscription-agents",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
+  "description": "Use local Codex and Claude Code subscription accounts as DeepSeek Harness models and continuable child agents.",
+  "license": "MIT",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -14,18 +16,23 @@
     "accounts.js",
     "agent-runner.js",
     "native-bridge.js",
+    "compat.js",
     "cli.js",
     "codex-usage.js",
     "client.js",
-    "client.css",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
     "workspace-ui",
     "README.md",
+    "LICENSE",
     "spec"
   ],
-  "peerDependencies": { "@deepseek-ai/dsh-llm": "0.2.2-rc.3" },
+  "scripts": {
+    "test": "node --test *.test.js"
+  },
+  "engines": { "dsh": ">=0.2.2-rc.3 <0.3.0-0" },
+  "peerDependencies": { "@deepseek-ai/dsh-llm": ">=0.2.2-rc.3 <0.3.0-0" },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
