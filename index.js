@@ -2,12 +2,14 @@ import { join } from 'node:path';
 import { makeService } from './accounts.js';
 import { installNativeBridge } from './native-bridge.js';
 import { randomUUID } from 'node:crypto';
+import { assertHostApi } from './compat.js';
 
 export const inject = ['connection','tools','profileContext','subagents','llm','agents','sandboxPolicy','workingDirectory'];
 const path = '/api/subscription-agents';
 const json = (value, status=200) => Response.json(value, {status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
 
 export async function apply(ctx) {
+  assertHostApi(ctx);
   const service = await makeService(join(ctx.profileContext.dir, 'subscription-agents'), {
     onCatalogChanged(provider) {
       try { ctx.emit('llm/models-updated', `dsh-subscription-${provider}`); }
