@@ -8,5 +8,5 @@
       name: './workspace-ui/index.js'
       config: {}
     - id: subscription-agents
-      name: '@local/dsh-subscription-agents'
+      name: 'dsh-subscription-agents'
       config: {}

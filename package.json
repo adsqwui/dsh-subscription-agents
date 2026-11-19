@@ -1,10 +1,26 @@
 {
-  "name": "@local/dsh-subscription-agents",
-  "version": "1.1.0",
-  "private": true,
-  "type": "module",
+  "name": "dsh-subscription-agents",
+  "version": "1.2.0",
   "description": "Use local Codex and Claude Code subscription accounts as DeepSeek Harness models and continuable child agents.",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "codex",
+    "claude-code",
+    "subagents",
+    "ai-agents"
+  ],
+  "homepage": "https://github.com/adsqwui/dsh-subscription-agents#readme",
+  "bugs": {
+    "url": "https://github.com/adsqwui/dsh-subscription-agents/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adsqwui/dsh-subscription-agents.git"
+  },
   "license": "MIT",
+  "author": "adsqwui",
+  "type": "module",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -23,7 +39,12 @@
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
-    "workspace-ui",
+    "workspace-ui/index.js",
+    "workspace-ui/client.js",
+    "workspace-ui/package.json",
+    "workspace-ui/LICENSE",
+    "workspace-ui/icon.svg",
+    "workspace-ui/locale/*.json",
     "README.md",
     "LICENSE",
     "spec"
@@ -31,8 +52,12 @@
   "scripts": {
     "test": "node --test *.test.js"
   },
-  "engines": { "dsh": ">=0.2.2-rc.3 <0.3.0-0" },
-  "peerDependencies": { "@deepseek-ai/dsh-llm": ">=0.2.2-rc.3 <0.3.0-0" },
+  "engines": {
+    "dsh": ">=0.2.2-rc.3 <0.3.0-0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": ">=0.2.2-rc.3 <0.3.0-0"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
