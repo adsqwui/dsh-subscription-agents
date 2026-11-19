@@ -4,6 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/adsqwui/dsh-subscription-agents/actions/workflows/test.yml"><img alt="tests" src="https://github.com/adsqwui/dsh-subscription-agents/actions/workflows/test.yml/badge.svg"></a>
+  <a href="https://www.npmjs.com/package/dsh-subscription-agents"><img alt="npm" src="https://img.shields.io/npm/v/dsh-subscription-agents?color=cb3837&logo=npm"></a>
   <img alt="DeepSeek Harness 0.2.x" src="https://img.shields.io/badge/DeepSeek%20Harness-0.2.x-4d6bfe">
   <img alt="Node 22+" src="https://img.shields.io/badge/node-%3E%3D22-339933?logo=node.js&logoColor=white">
   <img alt="macOS" src="https://img.shields.io/badge/platform-macOS-lightgrey?logo=apple">
@@ -65,13 +66,15 @@ The bridge starts one CLI turn per DSH turn, reads its JSON event stream with bo
 
 ## Install
 
-```bash
-git clone https://github.com/adsqwui/dsh-subscription-agents.git
+In DSH open **Plugins → Add plugin**, enter the package name and install:
+
+```text
+dsh-subscription-agents
 ```
 
-In DSH open **Plugins → Add plugin**, enter the absolute path of the cloned folder, install and enable it, then fully restart Desktop. The nested sidebar replaces the shipped one, and that only happens on restart.
+Enable it, then fully restart Desktop: the nested sidebar replaces the shipped one, and that only happens on restart. From a terminal the same is `dsh plugin --profile <profile> add dsh-subscription-agents`.
 
-To update later, `git pull` in the folder and restart Desktop.
+To work on the code instead, clone the repository and give **Add plugin** the absolute path of the folder. DSH links to it, so `git pull` and a restart are all an update takes.
 
 ## Usage
 
