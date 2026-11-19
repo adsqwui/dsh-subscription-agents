@@ -1,16 +1,67 @@
-# Subscription agents for DeepSeek Harness
+<p align="center">
+  <img src="docs/banner.jpg" alt="dsh-subscription-agents: Codex and Claude Code subscriptions as DeepSeek Harness agents" width="100%">
+</p>
 
-A local, single-owner integration with the unmodified official Codex and Claude Code CLIs. It does not install the CLIs or collect or forward OAuth tokens. On this Mac, install and run as yourself and use only accounts you are authorized to use. For redistributable or hosted integrations, review the vendors' terms and supported API credentials separately.
+<p align="center">
+  <a href="https://github.com/adsqwui/dsh-subscription-agents/actions/workflows/test.yml"><img alt="tests" src="https://github.com/adsqwui/dsh-subscription-agents/actions/workflows/test.yml/badge.svg"></a>
+  <img alt="DeepSeek Harness 0.2.x" src="https://img.shields.io/badge/DeepSeek%20Harness-0.2.x-4d6bfe">
+  <img alt="Node 22+" src="https://img.shields.io/badge/node-%3E%3D22-339933?logo=node.js&logoColor=white">
+  <img alt="macOS" src="https://img.shields.io/badge/platform-macOS-lightgrey?logo=apple">
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/github/license/adsqwui/dsh-subscription-agents"></a>
+  <a href="CONTRIBUTING.md"><img alt="PRs welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen"></a>
+</p>
 
-## Read this before you use it
+<p align="center">
+  Run the official <b>Codex</b> and <b>Claude Code</b> CLIs on your own subscriptions as models and continuable child agents inside <a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a>.
+</p>
 
-Subscription plans from OpenAI and Anthropic are meant for a person using the vendor's own apps. Driving the official CLIs from another program, and especially spreading work over several subscriptions to stay under their limits, may break those vendors' terms. Accounts can be rate-limited or suspended for it. This project does not hide or disguise anything from the vendors, and it will not help you get around a ban. Use it only with accounts you own, read the current terms yourself, and accept that the risk is yours. There is no warranty (see [LICENSE](LICENSE)).
+---
+
+<p align="center">
+  <img src="docs/screenshot-accounts.png" alt="The Subscription agents panel with a Codex and a Claude Code account" width="90%">
+</p>
+
+## Why
+
+You already pay for ChatGPT or Claude. DeepSeek Harness is a good place to run agents. This plugin connects the two without API keys, proxies or patched binaries. It drives the **unmodified** official CLIs you installed yourself, gives each account its own isolated profile, and shows their work as ordinary DSH chats you can read, continue and interrupt.
+
+## Features
+
+- **Accounts panel.** Add Codex and Claude Code accounts, sign in through the vendor's own browser flow, run a one-word smoke test, then switch delegation on. Rename, refresh, sign out and remove from the same card.
+- **Subscriptions in the model picker.** A tested account shows up next to your other models (and in `/model`). The account's CLI picks the actual model.
+- **Real child agents.** The `subscription_agent` tool starts a native, continuable DSH child chat and returns its name at once. The lead gets a completion notice; `send_message` resumes the same account and vendor thread.
+- **Full transcript.** Child chats show the delegated prompt, every finished assistant message and the CLI's tool calls with their results. Nothing is invented: hidden reasoning and nested vendor agents are not faked.
+- **Nested sidebar.** Child chats fold under their parent in the workspace sidebar.
+- **Quota you can see.** Codex limit windows come from the Codex App Server; Claude Code windows come from its stream events. The tightest fresh window decides which account has the most headroom.
+- **Agent limits at a glance.** A compact list of every account and its current limit sits at the bottom of the left sidebar.
+- **Fails closed.** Restricted sessions, unknown DSH versions, missing CLIs and quota errors stop the task with a clear message instead of quietly doing something else.
+
+## How it works
+
+```mermaid
+flowchart LR
+  lead["DSH lead agent"] -- "subscription_agent" --> child["Native DSH child chat"]
+  picker["Model picker"] --> chat["Regular DSH chat"]
+  child --> bridge["CLI bridge"]
+  chat --> bridge
+  bridge --> pick{"Account choice"}
+  pick --> codex["codex exec<br/>CODEX_HOME per account"]
+  pick --> claude["claude -p<br/>CLAUDE_CONFIG_DIR per account"]
+  codex -. "JSONL events" .-> bridge
+  claude -. "stream-json events" .-> bridge
+  bridge -- "messages, tool calls, results" --> child
+```
+
+The bridge starts one CLI turn per DSH turn, reads its JSON event stream with bounded buffers, and writes the messages and tool activity into the DSH session. Each child chat pins one account and one vendor thread, so follow-ups continue the same conversation on the vendor side. Regular chats pass recent visible text to a fresh CLI turn instead, which is what lets you switch accounts or providers mid-conversation.
 
 ## Requirements
 
-- DeepSeek Harness Desktop 0.2.2-rc.3 or any later 0.2.x release. The manifest declares `engines.dsh: ">=0.2.2-rc.3 <0.3.0-0"`, so DSH updates inside 0.2 do not block the plugin. DSH 0.3 is refused until the plugin is checked against it.
-- macOS, with the official `codex` and/or `claude` CLI already installed and on `PATH` (`~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin` are searched).
-- A DSH Session with **Full access** for agent work and subscription chats.
+| | |
+|---|---|
+| DeepSeek Harness | Desktop **0.2.2-rc.3** or any later **0.2.x**. The manifest declares `engines.dsh: ">=0.2.2-rc.3 <0.3.0-0"`. |
+| OS | macOS |
+| CLIs | Official `codex` and/or `claude`, already installed and on `PATH` (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin` are searched) |
+| Session | **Full access** for agent work and subscription chats |
 
 ## Install
 
@@ -18,44 +69,89 @@ Subscription plans from OpenAI and Anthropic are meant for a person using the ve
 git clone https://github.com/adsqwui/dsh-subscription-agents.git
 ```
 
-In DSH open **Plugin Manager**, install from the cloned folder and enable the bundle, then fully restart Desktop. The bundle replaces the shipped workspace sidebar, which only takes effect after a restart.
+In DSH open **Plugins → Add plugin**, enter the absolute path of the cloned folder, install and enable it, then fully restart Desktop. The nested sidebar replaces the shipped one, and that only happens on restart.
 
-On start the plugin checks that every Host method it calls still exists. If a DSH update removed or renamed one, the plugin stops with an error naming the method and registers nothing, so no session is touched.
+To update later, `git pull` in the folder and restart Desktop.
 
 ## Usage
 
-Open **Subscription agents** in the left sidebar. Add a CLI profile, click Sign in and complete the provider's flow in your browser. If it did not open, use the pending sign-in link when displayed. After login the plugin attempts one minimal “OK” inference; **Test** repeats it. Enable dispatch separately. Disable stops new tasks and cancels a still-running delegated request if possible. Removing a profile also asks the CLI to log out locally. It does not revoke the provider's browser session.
+### Connect an account
 
-After enabling a tested account, select its **Codex · подписка** or **Claude Code · подписка** entry in the chat's regular model picker or with `/model`. The account's CLI chooses the actual model. The conversation runs through that account only; the plugin neither reads API keys nor switches to another route when the CLI is unavailable or out of quota. A regular chat passes recent visible text to a fresh CLI turn, so switching between accounts or providers works without reusing their private thread state. Current attachments are unsupported. The same **Full access** requirement below applies to regular chats. See the [subscription model picker specification](spec/subscription-model-picker.md).
+1. Open **Subscription agents** in the left sidebar and press **Add account**.
+2. Pick Codex or Claude Code and give it a local name.
+3. Press **Sign in** and finish the vendor's flow in your browser. If no browser opens, use the sign-in link the card shows.
+4. The plugin runs one minimal "OK" request. **Test** repeats it at any time.
+5. Switch **Delegation** on. Switching it off later stops new tasks and cancels a running one where possible.
 
-Codex accounts use a distinct CODEX_HOME with CLI-managed file authentication; Claude Code accounts use distinct CLAUDE_CONFIG_DIRs (CLI-managed macOS Keychain where available). Do not copy or share the private state directory. Existing unrelated CLI profiles are not imported. Accounts are named locally, independently of vendor identity; different rows are not proof of different subscriptions.
+**Remove** also asks the CLI to sign out locally. It does not revoke the vendor's browser session.
 
-Actual quota: Codex App Server snapshots refresh roughly every three minutes and after a request. Claude Code stream events are opportunistic and may not report any windows; no paid background prompts are run to guess quota. After six minutes or after the window reset, snapshots do not influence routing. The tightest fresh window determines headroom; unknown is ranked after known positive headroom. Quota errors are not retried across accounts.
+### Chat with a subscription
 
-The `subscription_agent` tool starts a real continuable DSH child and returns its name immediately. The lead receives a completion notice; `send_message` resumes the same pinned account and vendor session. Open the native child chat to inspect the delegated prompt, completed assistant messages, recorded CLI tool calls/results and send follow-ups through DSH. CLI messages are streamed at message boundaries; hidden reasoning and nested vendor subagents are not fabricated. The bridge records external tool results but never executes those recorded tool calls again through DSH.
+Pick **Codex · подписка · &lt;name&gt;** or **Claude Code · подписка · &lt;name&gt;** in the model picker or with `/model`. The conversation runs through that account only. If its CLI is missing or out of quota, the turn fails; the plugin never falls back to another route or reads API keys. Attachments are not supported yet. See the [model picker spec](spec/subscription-model-picker.md).
 
-Full CLI work uses the parent project directory rather than the smoke test's private empty directory. In this version the DSH Session must have Full access; restricted Sessions fail closed because CLI permissions cannot reproduce DSH filesystem confinement. Codex still uses workspace-write with no interactive approvals; Claude Code uses acceptEdits and denies unanswered permission prompts, so arbitrary Bash commands are not automatically approved. Account disable prevents later turns and cancels the current account operation. Vendor thread IDs are stored privately per DSH child, alongside the account profiles. Removing an account prevents continuation of its existing children; their DSH transcript remains readable.
+### Delegate work
 
-The bundle also carries a local workspace UI replacement in `workspace-ui/`. It preserves the installed workspace feature and adds collapsible native child rows directly under their parent chat. The bundle disables the shipped `ui-workspace` row while enabled; disabling this bundle restores the shipped UI. The patch refers to it by a path relative to `cordis.patch.yml`, so the folder can live anywhere.
+Ask the lead agent to hand a task off, or let it call `subscription_agent` itself:
 
-`workspace-ui` is built from the MIT-licensed DSH `ui-workspace` package at `dsh-v0.2.2-rc.3` plus `workspace-ui/native-tree.patch` (DeepSeek's license is kept in `workspace-ui/LICENSE`). Upstream `ui-workspace` is unchanged between rc.3 and rc.5. Before relying on a newer DSH, check whether it changed, in a DSH source checkout:
+```text
+Delegate to a Claude Code subscription agent: add tests for src/parser.ts
+and fix whatever they catch. You own src/parser.ts and its tests only.
+```
+
+The child chat appears under its parent. Open it to watch progress or to send a follow-up. For parallel work, give independent tasks to separate children: each Codex process works on its own, with nested Codex agents turned off. See the [delegation spec](spec/agent-delegation.md).
+
+## Safety and permissions
+
+- **Full access only.** CLI permissions cannot reproduce DSH's filesystem confinement, so restricted sessions are refused instead of being quietly widened.
+- **No silent approvals.** Codex runs with `workspace-write` and no interactive approvals. Claude Code runs with `acceptEdits` and denies unanswered permission prompts, so arbitrary shell commands are not auto-approved.
+- **Isolated credentials.** Codex accounts use their own `CODEX_HOME` with CLI-managed file auth. Claude Code accounts use their own `CLAUDE_CONFIG_DIR` and the macOS Keychain where available. Your existing CLI profiles are never imported or touched. Do not copy or share the plugin's private state folder.
+- **Recorded, not replayed.** Tool calls the CLI made are written into the transcript but are never executed again through DSH.
+- **Guarded start.** On start the plugin checks every DSH Host method it uses. If an update renamed or removed one, it stops with an error naming it and registers nothing.
+
+## Quota and account choice
+
+Codex snapshots refresh about every three minutes and after each request. Claude Code reports windows only when its stream includes them, and the plugin never sends paid background prompts to find out. A snapshot older than six minutes, or one past its reset time, no longer affects the choice. Among enabled accounts, the one with the most headroom in its tightest fresh window wins; accounts with unknown quota come after accounts with known headroom. A quota error is never retried on another account.
+
+## Compatibility
+
+The plugin accepts every DSH **0.2.x** release and refuses **0.3** until it has been checked against it. The nested sidebar in `workspace-ui/` is a patched build of DSH's MIT-licensed `ui-workspace` package from `dsh-v0.2.2-rc.3` (unchanged upstream through rc.5). To see whether a newer DSH changed it, run this in a DSH source checkout:
 
 ```bash
 git diff --stat dsh-v0.2.2-rc.3 <new-tag> -- packages/client/ui-workspace/src
 ```
 
-Empty output means the bundled sidebar is still current. Otherwise re-apply `native-tree.patch` on the new source, rebuild with `tsdown.config.ts` (it expects the DSH checkout at `../../deepseek-harness-src` relative to `workspace-ui`) and run `node workspace-ui/finalize-build.mjs`.
+Empty output means the bundled sidebar is still current. Otherwise re-apply `workspace-ui/native-tree.patch` to the new source, rebuild with `workspace-ui/tsdown.config.ts` (it expects the DSH checkout at `../../deepseek-harness-src` relative to `workspace-ui`) and run `node workspace-ui/finalize-build.mjs`. Disabling the bundle always brings the stock sidebar back.
 
-Harness owns delegation for Codex subscription agents: each Codex process works directly, with nested Codex agents disabled for both new and resumed turns. To work in parallel, delegate independent tasks to separate Harness child chats. Empty legacy Codex waits are omitted from the transcript; reported agent states and errors remain visible. See [delegation specification](spec/agent-delegation.md).
-
-## Tests
+## Development
 
 ```bash
 npm test
 ```
 
+The suite runs on Node 22 and 24 on Linux and macOS in CI. It needs no DSH install and no CLI logins: the CLIs and the Host are replaced with fakes.
+
+| File | What it does |
+|---|---|
+| `index.js` | Registers the panel API and the `subscription_agent` tool |
+| `accounts.js` | Account store, sign-in, tests, quota and account choice |
+| `cli.js` | Spawns the CLIs with isolated environments and parses their output |
+| `agent-runner.js` | Runs one persistent CLI turn and normalizes its events |
+| `native-bridge.js` | LLM adapter and subagent provider that write CLI turns into DSH sessions |
+| `codex-usage.js` | Reads Codex limit windows from the App Server |
+| `compat.js` | Checks the DSH Host API before anything registers |
+| `client.js` | The accounts panel and the Agent limits list |
+| `workspace-ui/` | The nested workspace sidebar |
+
+## Contributing
+
+Bug reports, ideas and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first; it covers the setup, what a good PR looks like, and the few rules that keep accounts safe.
+
+## Before you use it
+
+Subscription plans from OpenAI and Anthropic are meant for a person using the vendor's own apps. Driving the official CLIs from another program, and especially spreading work over several subscriptions to stay under their limits, may break those vendors' terms, and accounts can be rate-limited or suspended for it. This project hides nothing from the vendors and will not help you get around a ban. Use it only with accounts you own, read the current terms yourself, and accept that the risk is yours.
+
+References: [Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode) · [Codex App Server](https://developers.openai.com/codex/app-server) · [Claude Code authentication](https://code.claude.com/docs/en/authentication) · [Claude Code legal and compliance](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use)
+
 ## License
 
-MIT, see [LICENSE](LICENSE). `workspace-ui` contains code from DeepSeek Harness, also MIT, see `workspace-ui/LICENSE`.
-
-References: [Codex CLI automation](https://learn.chatgpt.com/docs/non-interactive-mode), [Codex App Server](https://developers.openai.com/codex/app-server), [Claude CLI auth](https://code.claude.com/docs/en/authentication), [Claude Code terms](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use).
+[MIT](LICENSE). `workspace-ui/` contains code from DeepSeek Harness, also MIT; its notice is kept in [`workspace-ui/LICENSE`](workspace-ui/LICENSE). Not affiliated with DeepSeek, OpenAI or Anthropic.
