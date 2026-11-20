@@ -4,7 +4,7 @@ import { installNativeBridge } from './native-bridge.js';
 import { randomUUID } from 'node:crypto';
 import { assertHostApi } from './compat.js';
 
-export const inject = ['connection','tools','profileContext','subagents','llm','agents','sandboxPolicy','workingDirectory'];
+export const inject = ['connection','tools','profileContext','subagents','agentDefaultModel','llm','agents','sandboxPolicy','workingDirectory'];
 const path = '/api/subscription-agents';
 const json = (value, status=200) => Response.json(value, {status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
 

@@ -98,6 +98,18 @@ export async function installNativeBridge(ctx, service) {
     writes = next;
     return next;
   }
+  // Blank chats display the default from the browser's shared model catalog.
+  // Refresh it after the Host commits a selection involving a subscription.
+  let previousDefault = ctx.agentDefaultModel.currentSelection();
+  ctx.on('app-boot/config-reload', () => {
+    const next = ctx.agentDefaultModel.currentSelection();
+    const previous = previousDefault;
+    previousDefault = next;
+    if (previous.provider === next.provider && previous.model === next.model &&
+        previous.reasoningEffort === next.reasoningEffort) return;
+    const route = routeProvider(next.provider) ? next.provider : previous.provider;
+    if (routeProvider(route)) ctx.emit('llm/models-updated', route);
+  });
   const cleanups = new Map();
   const life = new AbortController();
   ctx.effect(() => () => { life.abort(); for (const dispose of cleanups.values()) dispose(); cleanups.clear(); return writes; });

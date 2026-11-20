@@ -27,7 +27,7 @@ test('native child bridge records CLI tools without returning executable tool ca
   const session = { id: 'child-test', header: { origin:'subagent' }, seq: 4, eventAt: () => ({ type: 'step/start', data: { turn: 1, step: 1 } }), append(...args) { if (Array.isArray(args[0])) events.push(...args[0]); else events.push(args); } };
   const agent = { id: session.id, session, model: {current:()=>({provider:'dsh-subscription-codex',model:account})}, ctx:{ effect:fn=>fn(),tools:{restrict:()=>()=>{}}} };
   const ctx = {
-    profileContext:{dir:root},effect:fn=>{const d=fn();effects.push(d);return d;},on:(key,fn)=>{handlers[key]=fn;},
+    agentDefaultModel:{currentSelection:()=>({provider:'deepseek-official',model:'default'})},profileContext:{dir:root},effect:fn=>{const d=fn();effects.push(d);return d;},on:(key,fn)=>{handlers[key]=fn;},
     agents:{list:()=>[],get:()=>agent,turnBoundaryOf:()=>({openTurnStartSeq:1,lastStepStartSeq:2})},
     sandboxPolicy:{resolve:()=>({mode:'danger-full-access'})},workingDirectory:{get:()=>'/workspace'},
     llm:{registerAdapter(_routes,value){adapter=value;return ()=>{};}},subagents:{registerProvider(value){provider=value;return ()=>{};}},
@@ -87,9 +87,10 @@ async function mainChat(t, runner = async (_id, opts) => {
   const session = { id:'main-chat', header:{ origin:'user' }, eventAt:()=>({ type:'step/start',data:{ turn:1,step:1 } }), append(...row){ events.push(row); } };
   let adapter, selection = { provider:CODEX,model:codeAccount }, mode = 'danger-full-access';
   const registrations = [], emitted = [];
+  const handlers = new Map();
   const agent = { session,model:{ current:()=>selection } };
   const ctx = {
-    profileContext:{ dir:root }, effect(fn){ const dispose=fn(); effects.push(dispose); return dispose; }, on(){},
+    agentDefaultModel:{currentSelection:()=>({provider:'deepseek-official',model:'default'})},profileContext:{ dir:root }, effect(fn){ const dispose=fn(); effects.push(dispose); return dispose; }, on(name, handler){ handlers.set(name, handler); },
     agents:{ list:()=>[agent],get:()=>agent,turnBoundaryOf:()=>({ openTurnStartSeq:1,lastStepStartSeq:2 }) },
     sandboxPolicy:{ resolve:()=>({ mode }) },workingDirectory:{ get:()=>'/project' },
     llm:{ registerAdapter(routes,value){ adapter=value; registrations.push([...routes]); const handle=()=>{}; handle.replace=next=>registrations.push([...next]); return handle; } },subagents:{ registerProvider(){} },
@@ -116,8 +117,23 @@ async function mainChat(t, runner = async (_id, opts) => {
     for await (const chunk of adapter.stream({ ...selection,sessionId:session.id,messages,...extra })) chunks.push(chunk);
     return chunks;
   }
-  return { adapter,ask,calls,events,root,reads,ctx,accounts,bridge,registrations,emitted,select: next=>{ selection=next; },restrict:()=>{ mode='workspace-write'; } };
+  return { adapter,ask,calls,events,root,reads,ctx,accounts,bridge,registrations,emitted,handlers,select: next=>{ selection=next; },restrict:()=>{ mode='workspace-write'; } };
 }
+
+test('a saved subscription default refreshes the catalog used by blank chats', async t => {
+  const { ctx, handlers, emitted } = await mainChat(t);
+  const reload = handlers.get('app-boot/config-reload');
+  const provider = 'dsh-subscription-codex-1';
+  function commit(provider, model) {
+    ctx.agentDefaultModel.currentSelection = () => ({ provider, model });
+    reload();
+  }
+  commit(provider, 'gpt-a');
+  commit(provider, 'gpt-a');
+  commit(provider, 'gpt-b');
+  commit('deepseek-official', 'default');
+  assert.deepEqual(emitted, Array(3).fill(['llm/models-updated', provider]));
+});
 
 test('each account is its own provider listing the models its CLI reported', async t => {
   const { adapter,registrations } = await mainChat(t);
