@@ -10,14 +10,15 @@ const json = (value, status=200) => Response.json(value, {status,headers:{'Cache
 
 export async function apply(ctx) {
   assertHostApi(ctx);
+  let bridge;
   const service = await makeService(join(ctx.profileContext.dir, 'subscription-agents'), {
     onCatalogChanged(provider) {
-      try { ctx.emit('llm/models-updated', `dsh-subscription-${provider}`); }
+      try { bridge?.sync(provider); ctx.emit('llm/models-updated', `dsh-subscription-${provider}`); }
       catch (error) { ctx.logger.warn(error); }
     },
   });
   ctx.effect(() => () => service.dispose());
-  await installNativeBridge(ctx,service);
+  bridge = await installNativeBridge(ctx,service);
   ctx.effect(() => ctx.connection.fetch.register({
     path, methods:['POST'], requestBody:'streaming',
     async fetch(request) {
@@ -44,7 +45,7 @@ export async function apply(ctx) {
       }
     },
   }));
-  const properties = {action:{enum:['list','refresh','test','delegate'],type:'string'},id:{type:'string',description:'Account ID for refresh or test.'},provider:{enum:['codex','claude'],type:'string',description:'Optional CLI preference; omit to pick the available account with most fresh quota.'},prompt:{type:'string',description:'Task for a full CLI agent. It starts in the current project and, like this Full access session, can read, change and run anything on this computer with its built-in file and command tools. Specify the files it owns; avoid concurrent edits to the same files.',maxLength:70000},name:{type:'string',description:'Optional short agent name, lower-case letters, digits and hyphens.'},description:{type:'string',description:'Short task label displayed in the child chat.'}};
+  const properties = {action:{enum:['list','refresh','test','delegate'],type:'string'},id:{type:'string',description:'Account ID for refresh or test.'},provider:{enum:['codex','claude'],type:'string',description:'Optional CLI preference; omit to pick the available account with most fresh quota.'},model:{type:'string',description:'Optional model id from the account models that list returns; omit for the account default model.',maxLength:100},prompt:{type:'string',description:'Task for a full CLI agent. It starts in the current project and, like this Full access session, can read, change and run anything on this computer with its built-in file and command tools. Specify the files it owns; avoid concurrent edits to the same files.',maxLength:70000},name:{type:'string',description:'Optional short agent name, lower-case letters, digits and hyphens.'},description:{type:'string',description:'Short task label displayed in the child chat.'}};
   ctx.effect(() => ctx.tools.register({
     name:'subscription_agent',
     description:'Delegate project work to a full Codex or Claude Code agent using an enabled subscription account. Returns the child name immediately; a completion notice follows. Its ordinary DSH child chat preserves prompts, replies and CLI tool activity. Follow up with send_message, inspect list_agents, and interrupt through native subagent controls. Prefer this for independent project tasks; review the final diff and tests yourself. Never retry a quota failure through another account automatically.',
@@ -60,16 +61,19 @@ export async function apply(ctx) {
         if (ctx.sandboxPolicy.resolve({session:parent.session}).mode !== 'danger-full-access') return {ok:false,error:'Полноценный CLI-агент пока доступен только в сессии с полным доступом. Ограничения DSH не будут обходиться.'};
         const account = service.pick(args.provider);
         if (!account) return {ok:false,error:'Нет свободного подключённого аккаунта с разрешённым делегированием.'};
+        const models = bridge.models(account);
+        const model = args.model === undefined ? (models.find(m=>m.isDefault) ?? models[0]).id : args.model;
+        if (!models.some(m=>m.id===model)) return {ok:false,error:`Модели ${String(model).slice(0,100)} нет у аккаунта ${account.name}. Посмотрите список моделей через action list.`};
         const activation = await ctx.subagents.startActivation({
           provider:'subscription-cli', childId:randomUUID(), parent, signal:exec.signal,
           prompt:[{type:'text',text:args.prompt}], label:typeof args.description==='string' ? args.description.trim().slice(0,120) || `${account.provider} · ${account.name}` : `${account.provider} · ${account.name}`,
           ...(args.name ? {name:args.name} : {}), delivery:'parent',
           cwd:await ctx.workingDirectory.ensure(parent,exec.signal),
-          agentOptions:{provider:`dsh-subscription-${account.provider}`,model:account.id},
+          agentOptions:{provider:bridge.route(account),model},
           maxDepth:ctx.subagents.resolveMaxDepth(),
         });
         activation.result.catch(()=>{});
-        return {ok:true,childId:activation.childId,name:activation.name,messageId:activation.messageId,account:{number:account.number,provider:account.provider,name:account.name}};
+        return {ok:true,childId:activation.childId,name:activation.name,messageId:activation.messageId,account:{number:account.number,provider:account.provider,name:account.name,model}};
       }
       catch { return {ok:false,error:'Не удалось выполнить операцию подписки.'}; }
     },

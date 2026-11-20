@@ -29,8 +29,9 @@ You already pay for ChatGPT or Claude. DeepSeek Harness is a good place to run a
 ## Features
 
 - **Accounts panel.** Add Codex and Claude Code accounts, sign in through the vendor's own browser flow, run a one-word smoke test, then switch delegation on. Rename, refresh, sign out and remove from the same card.
-- **Subscriptions in the model picker.** A tested account shows up next to your other models (and in `/model`). The account's CLI picks the actual model.
-- **Real child agents.** The `subscription_agent` tool starts a native, continuable DSH child chat and returns its name at once. The lead gets a completion notice; `send_message` resumes the same account and vendor thread.
+- **Subscriptions in the model picker.** Every tested account is its own provider in the picker (and in `/model`), with the models its CLI lists: Opus, Sonnet, Haiku and Fable for Claude Code, the GPT models your Codex version offers. Pick one, or let the CLI default stand.
+- **Token usage like any other model.** After each turn the plugin hands DSH the token counts the CLI reported (input, cached input, output), so usage stats and themes count subscription turns under the real model id.
+- **Real child agents.** The `subscription_agent` tool starts a native, continuable DSH child chat and returns its name at once. The lead can pass `model` to pick one of the account's models (the `list` action shows them); without it the child runs on the account's default model. The lead gets a completion notice; `send_message` resumes the same account and vendor thread.
 - **Full transcript.** Child chats show the delegated prompt, every finished assistant message and the CLI's tool calls with their results. Nothing is invented: hidden reasoning and nested vendor agents are not faked.
 - **Nested sidebar.** Child chats fold under their parent in the workspace sidebar.
 - **Quota you can see.** Codex limit windows come from the Codex App Server; Claude Code windows come from its stream events. The tightest fresh window decides which account has the most headroom.
@@ -91,7 +92,7 @@ To work on the code instead, clone the repository and give **Add plugin** the ab
 
 ### Chat with a subscription
 
-Pick **Codex · подписка · &lt;name&gt;** or **Claude Code · подписка · &lt;name&gt;** in the model picker or with `/model`. The conversation runs through that account only. If its CLI is missing or out of quota, the turn fails; the plugin never falls back to another route or reads API keys. Images in your message go to the CLI with it (PNG, JPEG, GIF or WebP, up to 20, scaled to 2000 px on the long side); other file attachments are not supported yet. See the [model picker spec](spec/subscription-model-picker.md).
+Open the model picker or `/model`, find **Codex · подписка · &lt;name&gt;** or **Claude Code · подписка · &lt;name&gt;**, and pick a model under it. The list comes from the CLI itself (Claude Code's initialize response, Codex's `model/list`), refreshes when you press **Test** or **Refresh**, and otherwise every six hours. A newer Codex CLI lists newer models. The conversation runs through that account only. If its CLI is missing or out of quota, the turn fails; the plugin never falls back to another route or reads API keys. Images in your message go to the CLI with it (PNG, JPEG, GIF or WebP, up to 20, scaled to 2000 px on the long side); other file attachments are not supported yet. See the [model picker spec](spec/subscription-model-picker.md).
 
 ### Delegate work
 

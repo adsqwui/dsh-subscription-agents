@@ -3,11 +3,21 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 
+// Older selections name the account as the model on these per-vendor routes; they still resolve but list nothing.
 const ROUTES = { 'dsh-subscription-codex': 'codex', 'dsh-subscription-claude': 'claude' };
+// Every account is its own provider route, and its models are the ones its CLI lists.
+const ACCOUNT_ROUTE = /^dsh-subscription-(codex|claude)-([1-9][0-9]{0,8})$/;
+const DEFAULT_MODEL = 'default';
 const LABELS = { codex:'Codex', claude:'Claude Code' };
 const MAX_TEXT = 2_000_000;
 const MAX_CHAT_HISTORY = 80_000;
-const routeProvider = route => ROUTES[route];
+const accountRoute = account => `dsh-subscription-${account.provider}-${account.number}`;
+function parseRoute(route) {
+  if (Object.hasOwn(ROUTES, route)) return { provider: ROUTES[route] };
+  const match = ACCOUNT_ROUTE.exec(route ?? '');
+  return match ? { provider: match[1], number: Number(match[2]) } : undefined;
+}
+const routeProvider = route => parseRoute(route)?.provider;
 const isChild = session => session.header?.origin === 'subagent';
 const chatUser = m => m.role === 'user' && (!m.source || m.source.kind === 'user');
 const chatText = m => m.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
@@ -57,9 +67,12 @@ function chatPromptOf(messages) {
   return { prompt:`Previous chat messages (JSON lines, for context):\n${history.reverse().join('\n')}\n\nCurrent user request:\n${prompt}`, images };
 }
 // Codex and Claude Code both take image input, so both routes declare it to DSH.
-function modelInfo(provider, account) {
+function legacyInfo(provider, account) {
   return { provider, id:account.id, name:`${LABELS[account.provider]} · подписка · ${account.name}`, inputModalities:['text','image'] };
 }
+// Before the CLI has listed its models, the account offers one entry that leaves the choice to the CLI.
+const catalogOf = account => account.models?.length ? account.models : [{ id:DEFAULT_MODEL, name:'Модель CLI по умолчанию', inputModalities:['text','image'] }];
+const modelInfo = (provider, model) => ({ provider, id:model.id, name:model.name, inputModalities:model.inputModalities });
 function* textBlock(index, text) {
   yield { type:'block-start', index, blockType:'text' };
   yield { type:'text-delta', index, text };
@@ -96,6 +109,11 @@ export async function installNativeBridge(ctx, service) {
   ctx.on('agent/created', ({ agent }) => configure(agent));
   ctx.on('agent/disposed', ({ agent }) => { cleanups.delete(agent); });
   for (const agent of ctx.agents.list()) configure(agent);
+  const accountOf = route => {
+    const parsed = parseRoute(route);
+    return parsed?.number === undefined ? undefined : service.modelAccounts(parsed.provider).find(a => a.number === parsed.number);
+  };
+  const routes = () => [...Object.keys(ROUTES), ...Object.values(ROUTES).flatMap(provider => service.modelAccounts(provider).map(accountRoute))];
   async function readImages(refs, signal) {
     if (!refs.length) return [];
     const store = ctx.get('attachments');
@@ -110,15 +128,23 @@ export async function installNativeBridge(ctx, service) {
     return images;
   }
   class CliAdapter extends LlmAdapter {
-    providerInfo(provider) { return { id: provider, name: `${LABELS[routeProvider(provider)]} · подписка` }; }
+    providerInfo(provider) {
+      const account = accountOf(provider);
+      return { id: provider, name: `${LABELS[routeProvider(provider)]} · подписка${account ? ` · ${account.name}` : ''}` };
+    }
     providerRetryPolicy() { return { mode: 'normal', maxRetries: 0, retryableCodes: [], initialDelayMs: 1000, maxDelayMs: 1000, jitterRatio: 0 }; }
     async listModels(provider) {
-      return service.modelAccounts(routeProvider(provider)).map(account => modelInfo(provider,account));
+      const account = accountOf(provider);
+      return account ? catalogOf(account).map(model => modelInfo(provider,model)) : [];
     }
     async resolveModel(provider, model) {
-      const account = service.modelAccounts(routeProvider(provider)).find(row => row.id === model);
+      const parsed = parseRoute(provider);
+      const account = parsed?.number === undefined ? service.modelAccounts(parsed?.provider).find(row => row.id === model) : accountOf(provider);
       if (!account) throw new Error('Подписочный аккаунт недоступен. Проверьте вход и переключатель в панели «Подписочные агенты».');
-      return modelInfo(provider,account);
+      if (parsed.number === undefined) return legacyInfo(provider,account);
+      const entry = catalogOf(account).find(row => row.id === model);
+      if (!entry) throw new Error('Эта модель недоступна в подписке аккаунта. Выберите другую модель.');
+      return modelInfo(provider,entry);
     }
     async *stream(options) {
       if (options.purpose !== undefined) throw new Error('Subscription CLI does not handle auxiliary model requests.');
@@ -128,6 +154,10 @@ export async function installNativeBridge(ctx, service) {
       if (policy.mode !== 'danger-full-access') throw new Error('CLI workspace execution requires Full access in this release; restricted DSH policies cannot yet be enforced by this bridge.');
       const cwd = ctx.workingDirectory.get(agent.session);
       const provider = routeProvider(options.provider);
+      const routed = parseRoute(options.provider)?.number === undefined ? undefined : accountOf(options.provider);
+      if (parseRoute(options.provider)?.number !== undefined && !routed) throw new Error('Подписочный аккаунт недоступен. Проверьте вход и переключатель в панели «Подписочные агенты».');
+      const accountId = routed ? routed.id : options.model;
+      const cliModel = routed && options.model !== DEFAULT_MODEL ? options.model : undefined;
       const session = agent.session;
       const child = isChild(session);
       const position = ctx.agents.turnBoundaryOf(session);
@@ -136,7 +166,7 @@ export async function installNativeBridge(ctx, service) {
       const { turn, step } = stepEvent.data;
       const key = session.id;
       const old = child && Object.hasOwn(threads, key) ? threads[key] : undefined;
-      if (old && (old.account !== options.model || old.provider !== provider)) throw new Error('CLI account cannot be switched inside an existing child');
+      if (old && (old.account !== accountId || old.provider !== provider)) throw new Error('CLI account cannot be switched inside an existing child');
       const operationController = new AbortController();
       const signal = AbortSignal.any([life.signal, operationController.signal, ...(options.signal ? [options.signal] : [])]);
       const calls = new Map();
@@ -156,7 +186,7 @@ export async function installNativeBridge(ctx, service) {
         if (closed || signal.aborted) return;
         if (event.type === 'thread' && typeof event.id === 'string' && /^[a-zA-Z0-9_-]{1,200}$/.test(event.id)) {
           if (!child) return;
-          threads[key] = { account: options.model, provider, threadId: event.id };
+          threads[key] = { account: accountId, provider, threadId: event.id };
           try { await persist(); } catch (error) { operationController.abort(); throw error; }
         } else if (event.type === 'text' && typeof event.text === 'string') {
           enqueueText(event.text);
@@ -179,8 +209,8 @@ export async function installNativeBridge(ctx, service) {
       }
       const operation = Promise.resolve().then(async () => {
         const input = child ? promptOf(options.messages) : chatPromptOf(options.messages);
-        return service.runAgentTurn(options.model, {
-          cwd, permissionMode: policy.mode, threadId: old?.threadId, expectedProvider:provider, ephemeral:!child,
+        return service.runAgentTurn(accountId, {
+          cwd, permissionMode: policy.mode, ...(cliModel ? { model: cliModel } : {}), threadId: old?.threadId, expectedProvider:provider, ephemeral:!child,
           prompt: input.prompt, images: await readImages(input.images, signal), signal, onEvent,
         });
       }).then(value => { result = value; }, error => { failure = error; }).finally(() => {
@@ -200,7 +230,7 @@ export async function installNativeBridge(ctx, service) {
         }
         await operation;
         if (child && result?.threadId && threads[key]?.threadId !== result.threadId) {
-          threads[key] = { account: options.model, provider, threadId: result.threadId };
+          threads[key] = { account: accountId, provider, threadId: result.threadId };
           await persist();
         }
         if (child) await writes;
@@ -211,6 +241,8 @@ export async function installNativeBridge(ctx, service) {
           if (typeof result?.text !== 'string' || !result.text.trim()) throw new Error('CLI завершил ход, но не вернул ответ.');
           yield* textBlock(index, result.text);
         }
+        // The CLI's own token count for the whole turn, so DSH usage totals include subscription turns.
+        if (result?.tokens) yield { type: 'usage', usage: result.tokens };
         yield { type: 'finish', reason: { kind: 'stop' } };
       } finally {
         closed = true;
@@ -220,7 +252,18 @@ export async function installNativeBridge(ctx, service) {
       }
     }
   }
-  ctx.effect(() => ctx.llm.registerAdapter(Object.keys(ROUTES), new CliAdapter()));
+  let registration, registered;
+  ctx.effect(() => {
+    registered = routes();
+    registration = ctx.llm.registerAdapter(registered, new CliAdapter());
+    return () => { registration?.(); registration = undefined; };
+  });
+  /** Bring the provider routes in line with the enabled accounts and tell DSH which catalogs changed. */
+  function sync(provider) {
+    const next = routes();
+    if (registration && next.join() !== registered.join()) { registration.replace(next); registered = next; }
+    for (const route of next) if (routeProvider(route) === provider) ctx.emit('llm/models-updated', route);
+  }
   ctx.effect(() => ctx.subagents.registerProvider({
     name: 'subscription-cli', inheritsParentContext: false,
     capabilities: { agentOptions: true, agentPreset: false, outputSchema: false, depthLimit: true },
@@ -229,5 +272,5 @@ export async function installNativeBridge(ctx, service) {
       return {};
     },
   }));
-  return { provider: 'subscription-cli', route: provider => provider === 'codex' ? 'dsh-subscription-codex' : 'dsh-subscription-claude' };
+  return { provider: 'subscription-cli', route: accountRoute, models: catalogOf, sync };
 }

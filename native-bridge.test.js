@@ -34,7 +34,7 @@ test('native child bridge records CLI tools without returning executable tool ca
   };
   try {
     const install = await loadBridge();
-    await install(ctx,{runAgentTurn:async(_id,opts)=>{
+    await install(ctx,{modelAccounts:()=>[],runAgentTurn:async(_id,opts)=>{
       turns.push(opts);
       await opts.onEvent({type:'thread',id:'thread-123'});
       await opts.onEvent({type:'text',text:'Inspecting before the tool'});
@@ -86,12 +86,14 @@ async function mainChat(t, runner = async (_id, opts) => {
   const effects = [], events = [], calls = [];
   const session = { id:'main-chat', header:{ origin:'user' }, eventAt:()=>({ type:'step/start',data:{ turn:1,step:1 } }), append(...row){ events.push(row); } };
   let adapter, selection = { provider:CODEX,model:codeAccount }, mode = 'danger-full-access';
+  const registrations = [], emitted = [];
   const agent = { session,model:{ current:()=>selection } };
   const ctx = {
     profileContext:{ dir:root }, effect(fn){ const dispose=fn(); effects.push(dispose); return dispose; }, on(){},
     agents:{ list:()=>[agent],get:()=>agent,turnBoundaryOf:()=>({ openTurnStartSeq:1,lastStepStartSeq:2 }) },
     sandboxPolicy:{ resolve:()=>({ mode }) },workingDirectory:{ get:()=>'/project' },
-    llm:{ registerAdapter(_routes,value){ adapter=value; } },subagents:{ registerProvider(){} },
+    llm:{ registerAdapter(routes,value){ adapter=value; registrations.push([...routes]); const handle=()=>{}; handle.replace=next=>registrations.push([...next]); return handle; } },subagents:{ registerProvider(){} },
+    emit:(name,route)=>emitted.push([name,route]),
     get:name=>name==='attachments' ? attachments : undefined,
   };
   const reads = [];
@@ -102,10 +104,10 @@ async function mainChat(t, runner = async (_id, opts) => {
   });
   const install = await loadBridge();
   const accounts = [
-    { id:codeAccount,name:'Personal',provider:'codex',number:1 },
-    { id:claudeAccount,name:'Work',provider:'claude',number:2 },
+    { id:codeAccount,name:'Personal',provider:'codex',number:1,models:[] },
+    { id:claudeAccount,name:'Work',provider:'claude',number:2,models:[{ id:'claude-opus-5-5',name:'Opus 5.5',inputModalities:['text','image'],isDefault:true },{ id:'claude-haiku-5-5',name:'Haiku 5.5',inputModalities:['text','image'] }] },
   ];
-  await install(ctx,{
+  const bridge = await install(ctx,{
     modelAccounts: provider => accounts.filter(a=>a.provider===provider),
     runAgentTurn(id,opts){ calls.push({ id,opts }); return runner(id,opts); },
   });
@@ -114,21 +116,55 @@ async function mainChat(t, runner = async (_id, opts) => {
     for await (const chunk of adapter.stream({ ...selection,sessionId:session.id,messages,...extra })) chunks.push(chunk);
     return chunks;
   }
-  return { adapter,ask,calls,events,root,reads,ctx,select: next=>{ selection=next; },restrict:()=>{ mode='workspace-write'; } };
+  return { adapter,ask,calls,events,root,reads,ctx,accounts,bridge,registrations,emitted,select: next=>{ selection=next; },restrict:()=>{ mode='workspace-write'; } };
 }
 
-test('the regular catalog has separate discoverable subscription profiles that take images', async t => {
-  const { adapter } = await mainChat(t);
-  for (const [provider,id,vendor] of [[CODEX,codeAccount,'Codex'],[CLAUDE,claudeAccount,'Claude Code']]) {
-    const [model] = await adapter.listModels(provider);
-    assert.equal(model.provider,provider);
-    assert.equal(model.id,id);
-    assert.match(model.name,new RegExp(vendor));
-    assert.match(model.name,/подписка/i);
-    assert.equal((await adapter.resolveModel(provider,id)).name,model.name);
-    assert.equal(model.inputModalities.join(),'text,image');
-  }
+test('each account is its own provider listing the models its CLI reported', async t => {
+  const { adapter,registrations } = await mainChat(t);
+  assert.deepEqual(registrations[0],[CODEX,CLAUDE,'dsh-subscription-codex-1','dsh-subscription-claude-2']);
+  assert.equal(adapter.providerInfo('dsh-subscription-claude-2').name,'Claude Code · подписка · Work');
+  const claude = await adapter.listModels('dsh-subscription-claude-2');
+  assert.deepEqual(claude.map(m=>[m.provider,m.id,m.name,m.inputModalities.join()]),[['dsh-subscription-claude-2','claude-opus-5-5','Opus 5.5','text,image'],['dsh-subscription-claude-2','claude-haiku-5-5','Haiku 5.5','text,image']]);
+  assert.equal((await adapter.resolveModel('dsh-subscription-claude-2','claude-haiku-5-5')).name,'Haiku 5.5');
+  await assert.rejects(adapter.resolveModel('dsh-subscription-claude-2','gpt-x'),/недоступна/);
+  // A Codex account whose CLI has not listed models yet offers the CLI default.
+  assert.deepEqual([...(await adapter.listModels('dsh-subscription-codex-1'))].map(m=>m.id),['default']);
+  await assert.rejects(adapter.resolveModel('dsh-subscription-codex-9','default'),/аккаунт/i);
+  // Per-vendor routes list nothing, yet chats that picked an account there keep resolving.
+  assert.equal((await adapter.listModels(CODEX)).length,0);
+  const legacy = await adapter.resolveModel(CODEX,codeAccount);
+  assert.match(legacy.name,/Codex · подписка · Personal/);
   await assert.rejects(adapter.resolveModel(CODEX,claudeAccount),/аккаунт/i);
+});
+
+test('account routes follow the enabled accounts and announce changed catalogs', async t => {
+  const { accounts,bridge,registrations,emitted } = await mainChat(t);
+  accounts.push({ id:'cccccccc-cccc-cccc-cccc-cccccccccccc',name:'Second',provider:'claude',number:3,models:[] });
+  bridge.sync('claude');
+  assert.deepEqual(registrations.at(-1),[CODEX,CLAUDE,'dsh-subscription-codex-1','dsh-subscription-claude-2','dsh-subscription-claude-3']);
+  assert.deepEqual(emitted.map(e=>e[1]),[CLAUDE,'dsh-subscription-claude-2','dsh-subscription-claude-3']);
+  const count = registrations.length;
+  bridge.sync('codex');
+  assert.equal(registrations.length,count);
+  assert.equal(bridge.route(accounts[0]),'dsh-subscription-codex-1');
+  assert.deepEqual([...bridge.models(accounts[0])].map(m=>m.id),['default']);
+});
+
+test('a chosen model reaches the CLI and the CLI token count reaches DSH', async t => {
+  const { ask,calls,select } = await mainChat(t, async () => ({ text:'Готово',tokens:{ inputTokens:120,outputTokens:30,totalTokens:150,cacheReadTokens:0 } }));
+  select({ provider:'dsh-subscription-claude-2',model:'claude-haiku-5-5' });
+  const chunks = await ask([turnInput('Привет')]);
+  assert.equal(calls[0].id,claudeAccount);
+  assert.equal(calls[0].opts.model,'claude-haiku-5-5');
+  assert.deepEqual(chunks.slice(-2).map(c=>c.type),['usage','finish']);
+  assert.equal(chunks.at(-2).usage.totalTokens,150);
+  select({ provider:'dsh-subscription-codex-1',model:'default' });
+  await ask([turnInput('Привет')]);
+  assert.equal(calls[1].id,codeAccount);
+  assert.equal('model' in calls[1].opts,false);
+  select({ provider:'dsh-subscription-codex-7',model:'default' });
+  await assert.rejects(ask([turnInput('Привет')]),/аккаунт/i);
+  assert.equal(calls.length,2);
 });
 
 test('ordinary chats use the selected account directly and can switch subscriptions with text history', async t => {
