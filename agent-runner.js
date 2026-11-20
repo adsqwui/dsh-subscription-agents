@@ -4,6 +4,8 @@ import { StringDecoder } from 'node:string_decoder';
 const MAX_PENDING = 2 * 1024 * 1024;
 const MAX_LINE = 1024 * 1024;
 const MAX_TEXT = 128 * 1024;
+// An oversized line is drained without buffering; only its head is kept to find which call it closes.
+const OVERSIZED_HEAD = 64 * 1024;
 const TIMEOUT = 30 * 60_000;
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,159}$/;
 
@@ -162,12 +164,24 @@ export async function runAgent({ provider, exe, env, cwd, permissionMode, thread
       else if (!text && event.result) await completedText(event.result, 'final-result');
     }
   }
+  // A command or tool result too large for one event line closes its call with a note
+  // instead of ending the turn. Lines that belong to no open call are skipped.
+  async function oversized(head, bytes) {
+    const id = provider === 'codex'
+      ? (/"type":"item\.completed"/.test(head.slice(0, 200)) ? head.slice(head.indexOf('"item":{')).match(/"id":"([^"]+)"/)?.[1] : undefined)
+      : head.match(/"tool_use_id":"([^"]+)"/)?.[1];
+    const item = id ? tools.get(id) : undefined;
+    if (!item || item.ended) return;
+    const note = `[CLI output omitted: ${(bytes / 1048576).toFixed(1)} MB is over the ${MAX_LINE / 1048576} MB event limit. The CLI still received it.]`;
+    await endTool(id, item.name, item.args, note, false);
+  }
   async function drain() {
     if (processing) return;
     processing = true;
     try {
       while (queue.length && !stopped) {
-        const { line, bytes } = queue.shift(); queuedBytes -= bytes;
+        const { line, bytes, head } = queue.shift(); queuedBytes -= head === undefined ? bytes : head.length;
+        if (head !== undefined) { await oversized(head, bytes); continue; }
         let event;
         try { event = JSON.parse(line); } catch { throw new Error('CLI returned malformed JSONL'); }
         if (!event || typeof event !== 'object' || Array.isArray(event)) throw new Error('CLI returned invalid JSONL event');
@@ -177,19 +191,32 @@ export async function runAgent({ provider, exe, env, cwd, permissionMode, thread
     } catch (error) { stop(error); }
     finally { processing = false; if (closed && !queue.length) resolveDone(); }
   }
+  let skipping = null; // { head, bytes } while the rest of an oversized line is being drained
+  const queueOversized = ({ head, bytes }) => { queuedBytes += head.length; queue.push({ head, bytes }); };
   child.stdout.on('data', chunk => {
     if (stopped) return;
     stdoutBytes += chunk.length;
     if (stdoutBytes > 64 * MAX_PENDING) return stop('CLI output exceeds turn limit');
-    pending += decoder.write(chunk); pendingBytes = Buffer.byteLength(pending);
-    if (pendingBytes > MAX_PENDING) return stop('CLI JSONL buffer exceeds limit');
-    let index;
-    while ((index = pending.indexOf('\n')) !== -1) {
-      const line = pending.slice(0, index).trim(); pending = pending.slice(index + 1);
-      if (!line) continue;
-      const bytes = Buffer.byteLength(line);
-      if (bytes > MAX_LINE) return stop('CLI event exceeds line limit');
-      queuedBytes += bytes; queue.push({ line, bytes });
+    let text = decoder.write(chunk);
+    while (text) {
+      if (skipping) {
+        const end = text.indexOf('\n');
+        skipping.bytes += Buffer.byteLength(end === -1 ? text : text.slice(0, end));
+        if (end === -1) break;
+        queueOversized(skipping); skipping = null; text = text.slice(end + 1);
+        continue;
+      }
+      pending += text; text = '';
+      let index;
+      while ((index = pending.indexOf('\n')) !== -1) {
+        const line = pending.slice(0, index).trim(); pending = pending.slice(index + 1);
+        if (!line) continue;
+        const bytes = Buffer.byteLength(line);
+        if (bytes > MAX_LINE) { queueOversized({ head: line.slice(0, OVERSIZED_HEAD), bytes }); continue; }
+        queuedBytes += bytes; queue.push({ line, bytes });
+      }
+      pendingBytes = Buffer.byteLength(pending);
+      if (pendingBytes > MAX_LINE) { skipping = { head: pending.slice(0, OVERSIZED_HEAD), bytes: pendingBytes }; pending = ''; }
     }
     if (queuedBytes > MAX_PENDING) return stop('CLI event queue exceeds limit');
     if (queuedBytes >= MAX_PENDING / 2) child.stdout.pause();
@@ -201,9 +228,11 @@ export async function runAgent({ provider, exe, env, cwd, permissionMode, thread
   child.once('close', (code, sig) => {
     closed = true; closeCode = code; closeSignal = sig;
     pending += decoder.end();
-    if (pending.trim() && !stopped) {
+    if (skipping && !stopped) { queueOversized(skipping); skipping = null; }
+    else if (pending.trim() && !stopped) {
       const bytes = Buffer.byteLength(pending);
-      if (bytes > MAX_LINE || queuedBytes + bytes > MAX_PENDING) stop('CLI trailing event exceeds limit');
+      if (bytes > MAX_LINE) queueOversized({ head: pending.trim().slice(0, OVERSIZED_HEAD), bytes });
+      else if (queuedBytes + bytes > MAX_PENDING) stop('CLI trailing event exceeds limit');
       else { queue.push({ line: pending.trim(), bytes }); queuedBytes += bytes; }
     }
     pending = '';

@@ -161,9 +161,39 @@ test('cancellation stops process and rejects', async t => {
   await assert.rejects(runAgent({...conf,provider:'codex',signal:controller.signal,onEvent:async()=>controller.abort()}),/cancelled/);
 });
 
-test('malformed JSON and oversized events fail closed', async t => {
+test('malformed JSON fails closed; an oversized unknown event is skipped, not fatal', async t => {
   const malformed=await fixture(t,[], 'process.stdout.write("not-json\\n");');
   await assert.rejects(runAgent({...malformed,provider:'codex',onEvent:async()=>{}}),/malformed/);
   const large=await fixture(t,[], 'process.stdout.write(JSON.stringify({type:"message",text:"x".repeat(1100000)})+"\\n");');
-  await assert.rejects(runAgent({...large,provider:'codex',onEvent:async()=>{}}),/line limit/);
+  // The skipped line carried no terminal result, so the turn still has to fail for that reason.
+  await assert.rejects(runAgent({...large,provider:'codex',onEvent:async()=>{}}),/terminal turn result/);
+});
+
+for (const mb of [1.5, 3]) {
+  test(`a ${mb} MB Codex command output closes its tool call and the turn continues`, async t => {
+    const started={type:'item.started',item:{id:'c1',type:'command_execution',command:'grep -R x .',status:'in_progress'}};
+    const conf=await fixture(t,[{type:'thread.started',thread_id:UUID},started],
+      `process.stdout.write(JSON.stringify({type:'item.completed',item:{id:'c1',type:'command_execution',command:'grep -R x .',aggregated_output:'x'.repeat(${mb * 1048576}),exit_code:0,status:'completed'}})+'\\n');`
+      + `process.stdout.write(JSON.stringify({type:'item.completed',item:{id:'a1',type:'agent_message',text:'Done'}})+'\\n');`
+      + `process.stdout.write(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,output_tokens:1}})+'\\n');`);
+    const events=[];
+    const result=await runAgent({...conf,provider:'codex',onEvent:async e=>events.push(e)});
+    assert.equal(result.text,'Done');
+    assert.deepEqual(events.map(e=>e.type),['thread','tool-start','tool-end','text']);
+    assert.equal(events[2].id,'c1'); assert.equal(events[2].isError,false);
+    assert.match(events[2].text,/output omitted/i);
+    assert.ok(events[2].text.length < 1000);
+  });
+}
+
+test('an oversized Claude Code tool result closes its call', async t => {
+  const assistant={type:'assistant',uuid:'m1',session_id:UUID,parent_tool_use_id:null,message:{content:[{type:'tool_use',id:'t1',name:'Bash',input:{command:'cat big.log'}}]}};
+  const conf=await fixture(t,[{type:'system',subtype:'init',session_id:UUID},assistant],
+    `process.stdout.write(JSON.stringify({type:'user',session_id:'${UUID}',parent_tool_use_id:null,message:{content:[{type:'tool_result',tool_use_id:'t1',content:'y'.repeat(1600000)}]}})+'\\n');`
+    + `process.stdout.write(JSON.stringify({type:'result',subtype:'success',session_id:'${UUID}',result:'Read it',is_error:false})+'\\n');`);
+  const events=[];
+  const result=await runAgent({...conf,provider:'claude',onEvent:async e=>events.push(e)});
+  assert.equal(result.text,'Read it');
+  const end=events.find(e=>e.type==='tool-end');
+  assert.equal(end.id,'t1'); assert.match(end.text,/output omitted/i);
 });

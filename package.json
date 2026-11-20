@@ -1,6 +1,6 @@
 {
   "name": "dsh-subscription-agents",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Use local Codex and Claude Code subscription accounts as DeepSeek Harness models and continuable child agents.",
   "keywords": [
     "dsh-plugin",
