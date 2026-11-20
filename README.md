@@ -106,7 +106,7 @@ The child chat appears under its parent. Open it to watch progress or to send a 
 ## Safety and permissions
 
 - **Full access only.** CLI permissions cannot reproduce DSH's filesystem confinement, so restricted sessions are refused instead of being quietly widened.
-- **No silent approvals.** Codex runs with `workspace-write` and no interactive approvals. Claude Code runs with `acceptEdits` and denies unanswered permission prompts, so arbitrary shell commands are not auto-approved.
+- **Full access means the whole computer.** In a Full access session the CLI gets the same reach as DSH itself: Codex runs with `danger-full-access` and no approval prompts, Claude Code with `bypassPermissions`. Agents start in the session's working folder but can read, change and run anything your user account can. Only use it with tasks and accounts you trust.
 - **Isolated credentials.** Codex accounts use their own `CODEX_HOME` with CLI-managed file auth. Claude Code accounts use their own `CLAUDE_CONFIG_DIR` and the macOS Keychain where available. Your existing CLI profiles are never imported or touched. Do not copy or share the plugin's private state folder.
 - **Recorded, not replayed.** Tool calls the CLI made are written into the transcript but are never executed again through DSH.
 - **Guarded start.** On start the plugin checks every DSH Host method it uses. If an update renamed or removed one, it stops with an error naming it and registers nothing.

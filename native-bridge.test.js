@@ -60,7 +60,7 @@ test('native child bridge records CLI tools without returning executable tool ca
     assert.equal(events[0][1].message.content[0].type,'tool-call');
     assert.equal(events[1][0],'tool/call');assert.equal(events[2][0],'tool/result');
     assert.equal(events[1][1].name,'subscription_cli_shell');
-    assert.equal(turns[0].cwd,'/workspace');assert.equal(turns[0].permissionMode,'workspace-write');
+    assert.equal(turns[0].cwd,'/workspace');assert.equal(turns[0].permissionMode,'danger-full-access');
     await collect();assert.equal(turns[1].threadId,'thread-123');
     assert.equal(JSON.parse(await readFile(join(root,'subscription-agents','native-threads.json'),'utf8'))[session.id].account,account);
     ctx.sandboxPolicy.resolve=()=>({mode:'workspace-write'});

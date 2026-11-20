@@ -9,6 +9,8 @@ const MAX_TEXT = 128 * 1024;
 const OVERSIZED_HEAD = 64 * 1024;
 const TIMEOUT = 30 * 60_000;
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,159}$/;
+// Claude Code's own modes for each DSH sandbox mode; Full access in DSH means no CLI permission checks either.
+const CLAUDE_MODES = { 'read-only':'plan', 'workspace-write':'acceptEdits', 'danger-full-access':'bypassPermissions' };
 
 /** Construct persistent CLI argv; execution cwd must match the supplied workspace. */
 export function agentArgs(provider, { cwd, permissionMode, threadId, ephemeral = false } = {}) {
@@ -24,8 +26,7 @@ export function agentArgs(provider, { cwd, permissionMode, threadId, ephemeral =
     return [...base, ...(threadId ? ['resume'] : []), '--json', '--skip-git-repo-check', ...(ephemeral ? ['--ephemeral'] : []), ...(threadId ? [threadId] : []), '-'];
   }
   if (provider === 'claude') {
-    // acceptEdits grants edits, not an unconfined Bash bypass, even for a full-access parent.
-    return ['-p', '--output-format', 'stream-json', '--verbose', '--tools', 'default', '--permission-mode', permissionMode === 'read-only' ? 'plan' : 'acceptEdits', '--permission-prompts', 'none', ...(ephemeral ? ['--no-session-persistence'] : []), ...(threadId ? ['--resume', threadId] : [])];
+    return ['-p', '--output-format', 'stream-json', '--verbose', '--tools', 'default', '--permission-mode', CLAUDE_MODES[permissionMode], '--permission-prompts', 'none', ...(ephemeral ? ['--no-session-persistence'] : []), ...(threadId ? ['--resume', threadId] : [])];
   }
   throw new Error('Unsupported CLI provider');
 }

@@ -25,7 +25,7 @@ These are not negotiable, because breaking them puts real users' accounts at ris
 
 - Never read, copy, forward or log OAuth tokens, API keys or anything inside a CLI's profile folder. The CLIs own their credentials.
 - Never retry a quota or auth failure on another account automatically.
-- Never widen permissions: restricted DSH sessions stay refused, Claude Code keeps denying unanswered permission prompts.
+- Never give a CLI more than the DSH session has: restricted sessions stay refused, and only a Full access session runs the CLI without permission checks.
 - Never execute recorded CLI tool calls again through DSH.
 - Never fake output the CLI did not produce.
 

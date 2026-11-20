@@ -15,6 +15,13 @@ async function fixture(t, lines, suffix = '') {
   return { exe, cwd:root, env:{PATH:process.env.PATH}, permissionMode:'workspace-write', prompt:'Test fixture' };
 }
 
+test('Full access runs both CLIs without permission checks', () => {
+  const claude = agentArgs('claude',{cwd:'/project',permissionMode:'danger-full-access'});
+  assert.equal(claude[claude.indexOf('--permission-mode')+1],'bypassPermissions');
+  const codex = agentArgs('codex',{cwd:'/project',permissionMode:'danger-full-access'});
+  assert.equal(codex[codex.indexOf('-s')+1],'danger-full-access');
+});
+
 test('argv preserves persistence, workspace and safe permission choices', () => {
   const fresh = agentArgs('codex',{cwd:'/project',permissionMode:'workspace-write'});
   assert.deepEqual(fresh,['-c','cli_auth_credentials_store="file"','-a','never','-s','workspace-write','-C','/project','--disable','multi_agent','--disable','multi_agent_v2','exec','--json','--skip-git-repo-check','-']);

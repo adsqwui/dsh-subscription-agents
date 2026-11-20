@@ -154,7 +154,7 @@ export async function installNativeBridge(ctx, service) {
         }
       }
       const operation = Promise.resolve().then(() => service.runAgentTurn(options.model, {
-        cwd, permissionMode: 'workspace-write', threadId: old?.threadId, expectedProvider:provider, ephemeral:!child,
+        cwd, permissionMode: policy.mode, threadId: old?.threadId, expectedProvider:provider, ephemeral:!child,
         prompt: child ? promptOf(options.messages) : chatPromptOf(options.messages), signal, onEvent,
       })).then(value => { result = value; }, error => { failure = error; }).finally(() => {
         settled = true;
