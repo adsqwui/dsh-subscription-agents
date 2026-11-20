@@ -1,8 +1,8 @@
 import { mkdir, chmod, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { cliEnv, command, executable, inference, run, subscribed, codexPrefix, callTimeout } from './cli.js';
-import { readCodexUsage } from './codex-usage.js';
+import { cliEnv, command, executable, inference, run, subscribed, codexPrefix, callTimeout, claudeModels, claudeModelsRequest } from './cli.js';
+import { readCodexModels, readCodexUsage } from './codex-usage.js';
 import { runAgent } from './agent-runner.js';
 
 const providers = ['codex','claude'];
@@ -11,6 +11,7 @@ const fail = message => ({ok:false,error:message});
 const ok = value => ({ok:true,...value});
 const LIMIT = 24;
 const FRESH = 6 * 60_000;
+const MODELS_FRESH = 6 * 60 * 60_000;
 export function remaining(a, now = Date.now()) {
   if (!a.usage || now - a.usage.updatedAt >= FRESH || !a.usage.windows.length || a.usage.windows.some(w => now - (w.sampledAt ?? a.usage.updatedAt) >= FRESH || (w.resetAt && w.resetAt <= now))) return undefined;
   return Math.min(...a.usage.windows.map(w => 100 - w.usedPercent));
@@ -21,7 +22,7 @@ export function pickAccount(accounts, provider, now = Date.now()) {
 }
 export async function makeService(root, options = {}) {
   if (!isAbsolute(root)) throw new Error('Expected an absolute profile directory');
-  const cliRun = options.run ?? run, resolve = options.executable ?? executable, getUsage = options.readCodexUsage ?? readCodexUsage;
+  const cliRun = options.run ?? run, resolve = options.executable ?? executable, getUsage = options.readCodexUsage ?? readCodexUsage, getModels = options.readCodexModels ?? readCodexModels;
   const life = new AbortController();
   const cwd = join(root,'empty');
   const file = join(root,'accounts.json');
@@ -32,7 +33,7 @@ export async function makeService(root, options = {}) {
   const active = new Map();
   const modelAccounts = provider => db.accounts
     .filter(a => a.provider === provider && a.enabled && a.status === 'ready' && a.testPassed === true)
-    .map(({id,name,provider,number}) => ({id,name,provider,number}));
+    .map(({id,name,provider,number,models}) => ({id,name,provider,number,models:models ?? []}));
   const catalogs = new Map(providers.map(provider => [provider,JSON.stringify(modelAccounts(provider))]));
   function publishCatalogChanges() {
     for (const provider of providers) {
@@ -62,7 +63,7 @@ export async function makeService(root, options = {}) {
   }
   const dir = a => join(root, a.id);
   function view(a, user = false) {
-    return Object.fromEntries(['id','number','provider','name','enabled','status','busy','note','usage','checkedAt','testPassed',...(user ? ['loginUrl'] : [])].filter(k=>a[k]!==undefined).map(k=>[k,a[k]]));
+    return Object.fromEntries(['id','number','provider','name','enabled','status','busy','note','usage','models','checkedAt','testPassed',...(user ? ['loginUrl'] : [])].filter(k=>a[k]!==undefined).map(k=>[k,a[k]]));
   }
   function start(a, busy, fn, parent) {
     if (active.has(a.id)) return;
@@ -104,6 +105,18 @@ export async function makeService(root, options = {}) {
       if (usage) a.usage = usage;
     } catch { /* An unavailable snapshot is not zero usage. */ }
   }
+  /** Refresh the account's model list; a failed read keeps the previous list. */
+  async function catalog(a, signal, force = false) {
+    if (!force && a.models?.length && Date.now() - (a.modelsAt ?? 0) < MODELS_FRESH) return;
+    const exe = (await availability())[a.provider];
+    if (!exe) return;
+    try {
+      const models = a.provider === 'codex'
+        ? await getModels({exe,argsPrefix:codexPrefix,cwd,env:cliEnv(a.provider,dir(a)),signal})
+        : claudeModels(await execute(a,'models',signal,{input:claudeModelsRequest,timeout:30_000}));
+      if (models?.length) { a.models = models; a.modelsAt = Date.now(); }
+    } catch { /* The previous list, or the CLI default model, stays usable. */ }
+  }
   async function invoke(a, prompt, signal, testing = false) {
     if (testing) {
       a.testPassed = false;
@@ -119,6 +132,7 @@ export async function makeService(root, options = {}) {
       a.usage = {...reply.usage,windows:[...windows.values()]};
     }
     await quota(a,signal);
+    if (testing) await catalog(a,signal,true);
     if (signal.aborted) return fail('Операция отменена.');
     a.lastUsed = Date.now();
     if (reply.error || (testing && reply.text !== 'OK')) {
@@ -134,7 +148,7 @@ export async function makeService(root, options = {}) {
   }
   function refresh(a) {
     if (a.busy || a.status !== 'ready') return;
-    return start(a,'refresh',async signal => { if (await status(a,signal)) await quota(a,signal); });
+    return start(a,'refresh',async signal => { if (await status(a,signal)) { await quota(a,signal); await catalog(a,signal); } });
   }
   function background(p) { p?.catch(() => {}); }
   const interval = setInterval(() => { for (const a of db.accounts) if (a.provider === 'codex') background(refresh(a)); },180_000);
@@ -200,7 +214,7 @@ export async function makeService(root, options = {}) {
       return ok({});
     }
     if (body.action === 'refresh') {
-      background(start(a,'refresh',async signal => {if (await status(a,signal)) await quota(a,signal);})); return ok({});
+      background(start(a,'refresh',async signal => {if (await status(a,signal)) { await quota(a,signal); await catalog(a,signal,true); }})); return ok({});
     }
     if (body.action === 'test') {
       if (!user && !a.enabled) return fail('Сначала разрешите делегирование для этого аккаунта в панели.');
@@ -225,11 +239,12 @@ export async function makeService(root, options = {}) {
     return fail('Неизвестное действие.');
   }
   for (const a of db.accounts) if (a.status === 'login') { a.status='new'; a.note='Прошлый вход был прерван.'; }
-  for (const a of db.accounts) if (a.provider === 'codex') background(refresh(a));
+  for (const a of db.accounts) if (a.provider === 'codex' || !a.models?.length) background(refresh(a));
   async function runAgentTurn(id, spec) {
     const a = db.accounts.find(a=>a.id===id);
     if (a && spec.expectedProvider !== undefined && a.provider !== spec.expectedProvider) throw new Error('Аккаунт не относится к выбранному провайдеру.');
     if (!a || !a.enabled || a.status !== 'ready' || a.testPassed !== true) throw new Error('Аккаунт отключён или не прошёл проверку CLI.');
+    if (spec.model !== undefined && !a.models?.some(m => m.id === spec.model)) throw new Error('Эта модель недоступна в подписке аккаунта. Выберите другую модель.');
     if (a.cooldown > Date.now() || remaining(a) === 0) throw new Error('Лимит аккаунта исчерпан. Дождитесь обновления лимитов; другой аккаунт автоматически не используется.');
     const refreshing = active.get(a.id);
     if (refreshing?.busy === 'refresh') await refreshing.task;

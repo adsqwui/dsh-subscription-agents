@@ -65,7 +65,30 @@ export function command(provider, op) {
   if (op === 'login') return ['auth','login','--claudeai'];
   if (op === 'status') return ['auth','status','--json'];
   if (op === 'logout') return ['auth','logout'];
+  // Answers the SDK initialize request (which lists models) and exits without calling a model.
+  if (op === 'models') return ['--safe-mode','-p','--input-format','stream-json','--output-format','stream-json','--verbose','--tools','','--strict-mcp-config','--no-chrome','--no-session-persistence'];
   return ['--safe-mode','-p','--output-format','stream-json','--verbose','--tools','','--strict-mcp-config','--no-chrome','--permission-prompts','none','--no-session-persistence'];
+}
+export const claudeModelsRequest = JSON.stringify({ type:'control_request', request_id:'models', request:{ subtype:'initialize' } }) + '\n';
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,99}$/;
+/** Models from Claude Code's initialize response, keyed by the full model id; aliases that resolve to one id collapse into it. */
+export function claudeModels(result) {
+  const response = readEvents(result.stdout).find(e => e?.type === 'control_response' && e.response?.request_id === 'models')?.response?.response;
+  if (!Array.isArray(response?.models)) return undefined;
+  const models = [];
+  let fallback;
+  for (const row of response.models) {
+    const id = typeof row?.resolvedModel === 'string' ? row.resolvedModel : row?.value;
+    if (typeof id !== 'string' || !MODEL_ID.test(id)) continue;
+    if (row.value === 'default') { fallback = id; continue; }
+    if (models.some(m => m.id === id)) continue;
+    const name = typeof row.displayName === 'string' && row.displayName.trim() ? row.displayName.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 80) : id;
+    models.push({ id, name, inputModalities:['text','image'] });
+    if (models.length === 50) break;
+  }
+  const preferred = models.find(m => m.id === fallback);
+  if (preferred) preferred.isDefault = true;
+  return models.length ? models : undefined;
 }
 export function subscribed(provider, result) {
   if (result.code !== 0) return false;

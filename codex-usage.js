@@ -6,7 +6,9 @@ const MAX_OUTPUT_BYTES = 256 * 1024 // Per stream; stderr is counted but never r
 const TERMINATE_GRACE_MS = 250
 const CLEANUP_TIMEOUT_MS = 750
 const INITIALIZE_ID = 1
-const RATE_LIMITS_ID = 2
+const REQUEST_ID = 2
+const MAX_MODELS = 50
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,99}$/
 
 function windowLabel(minutes, fallback) {
   if (!Number.isSafeInteger(minutes) || minutes <= 0) return fallback
@@ -38,9 +40,33 @@ function mapUsage(result) {
   return windows.length > 0 ? { updatedAt: Date.now(), windows } : undefined
 }
 
+/** Models the account may pick, as Codex lists them; hidden internal models are left out. */
+function mapModels(result) {
+  if (!Array.isArray(result?.data)) return undefined
+  const models = []
+  for (const row of result.data) {
+    const id = row?.id ?? row?.model
+    if (row?.hidden || typeof id !== 'string' || !MODEL_ID.test(id) || models.some(m => m.id === id)) continue
+    const name = typeof row.displayName === 'string' && row.displayName.trim() ? row.displayName.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 80) : id
+    const inputModalities = Array.isArray(row.inputModalities) && row.inputModalities.includes('image') ? ['text', 'image'] : ['text']
+    models.push({ id, name, inputModalities, ...(row.isDefault === true ? { isDefault: true } : {}) })
+    if (models.length === MAX_MODELS) break
+  }
+  return models.length ? models : undefined
+}
+
 // Only Codex handles its existing account state. No account/login RPCs, local auth reads,
 // or interpretation of errors as login state. Failure is always just unavailable usage.
-export async function readCodexUsage({ exe, argsPrefix = [], env, cwd, signal }) {
+export function readCodexUsage(options) {
+  return appServer(options, 'account/rateLimits/read', undefined, mapUsage)
+}
+
+/** The account's model list from `model/list`; a failure yields undefined, never an empty catalog. */
+export function readCodexModels(options) {
+  return appServer(options, 'model/list', { includeHidden: false, limit: 100 }, mapModels)
+}
+
+async function appServer({ exe, argsPrefix = [], env, cwd, signal }, method, params, map) {
   if (!exe || !env || signal?.aborted) return undefined
   let child
   try {
@@ -130,16 +156,16 @@ export async function readCodexUsage({ exe, argsPrefix = [], env, cwd, signal })
         if (!line.trim()) continue
         let message
         try { message = JSON.parse(line) } catch { return finish() }
-        // Notifications and any server-initiated requests are not quota responses.
+        // Notifications and any server-initiated requests are not the response we wait for.
         if (message?.method !== undefined || message?.id !== expectedId) continue
         if (Object.hasOwn(message, 'error') || !message.result || typeof message.result !== 'object') {
           return finish()
         }
         if (expectedId === INITIALIZE_ID) {
-          expectedId = RATE_LIMITS_ID
-          send({ method: 'initialized' }, { id: RATE_LIMITS_ID, method: 'account/rateLimits/read' })
+          expectedId = REQUEST_ID
+          send({ method: 'initialized' }, { id: REQUEST_ID, method, ...(params ? { params } : {}) })
         } else {
-          return finish(mapUsage(message.result))
+          return finish(map(message.result))
         }
       }
     })

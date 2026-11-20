@@ -38,11 +38,13 @@ test('reads every Claude window from unifiedWindows (Claude Code 2.1.x)', () => 
   assert.equal(parsed.text,'OK');
   assert.deepEqual(parsed.usage.windows.map(w=>({...w})),[{label:'5 часов',usedPercent:58,resetAt:1795185000000},{label:'7 дней',usedPercent:46,resetAt:1795528800000}]);
 });
+const MODELS = [{id:'gpt-x',name:'GPT X',inputModalities:['text','image'],isDefault:true},{id:'gpt-x-mini',name:'GPT X mini',inputModalities:['text']}];
 test('account lifecycle, smoke, user-only enable, delegation and persistence', async () => {
   const root = await mkdtemp(join(tmpdir(),'dsh-sub-agents-test-'));
   const calls=[];
   const catalogChanges=[];
-  const conf={onCatalogChanged:provider=>catalogChanges.push(provider),runAgent:async spec=>{assert.equal(spec.cwd,root);await spec.onEvent({type:'text',text:'draft'});return {threadId:'thread-1',text:'draft'};},executable:async p=>`/${p}`,readCodexUsage:async()=>({updatedAt:Date.now(),windows:[{label:'5h',usedPercent:30}]}),run:async(exe,args,opts)=>{
+  const runModels=[];
+  const conf={onCatalogChanged:provider=>catalogChanges.push(provider),runAgent:async spec=>{assert.equal(spec.cwd,root);runModels.push(spec.model);await spec.onEvent({type:'text',text:'draft'});return {threadId:'thread-1',text:'draft'};},executable:async p=>`/${p}`,readCodexUsage:async()=>({updatedAt:Date.now(),windows:[{label:'5h',usedPercent:30}]}),readCodexModels:async()=>MODELS,run:async(exe,args,opts)=>{
     calls.push({exe,args,opts});
     if (args.includes('status')) return okCli('Logged in using ChatGPT');
     if (args.includes('exec')) return okCli(json({type:'item.completed',item:{type:'agent_message',text:opts.input.startsWith('Reply')?'OK':'draft'}}));
@@ -62,13 +64,17 @@ test('account lifecycle, smoke, user-only enable, delegation and persistence', a
     assert.match(row.note,/CLI ответил OK/);
     assert.equal(row.enabled,false);
     assert.equal((await client('toggle',{id,enabled:true})).ok,true);
-    assert.deepEqual(service.modelAccounts('codex'),[{id,name:'Test',provider:'codex',number:1}]);
+    assert.deepEqual(service.modelAccounts('codex'),[{id,name:'Test',provider:'codex',number:1,models:MODELS}]);
     assert.deepEqual(service.modelAccounts('claude'),[]);
     assert.deepEqual(catalogChanges,['codex']);
     assert.equal((await service.action({action:'delegate',prompt:'Draft a short message.'})).ok,false);
     const reply = await service.runAgentTurn(id,{prompt:'Draft a short message.',cwd:root,permissionMode:'workspace-write',onEvent:async()=>{}});
     assert.equal(reply.text,'draft');
     await assert.rejects(service.runAgentTurn(id,{expectedProvider:'claude'}),/провайдер/i);
+    await assert.rejects(service.runAgentTurn(id,{model:'gpt-unknown',prompt:'x',cwd:root,onEvent:async()=>{}}),/модель недоступна/i);
+    const picked = await service.runAgentTurn(id,{model:'gpt-x-mini',prompt:'Draft a short message.',cwd:root,permissionMode:'workspace-write',onEvent:async()=>{}});
+    assert.equal(picked.text,'draft');
+    assert.deepEqual(runModels,[undefined,'gpt-x-mini']);
     assert.deepEqual(catalogChanges,['codex']);
     await client('rename',{id,name:'Renamed'});
     assert.equal(service.modelAccounts('codex')[0].name,'Renamed');
