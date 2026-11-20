@@ -11,14 +11,27 @@ const routeProvider = route => ROUTES[route];
 const isChild = session => session.header?.origin === 'subagent';
 const chatUser = m => m.role === 'user' && (!m.source || m.source.kind === 'user');
 const chatText = m => m.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+// Both CLIs read PNG, JPEG, GIF and WebP; 2000 px and 3.75 MB keep a base64 image under Claude's 5 MB per-image limit.
+const IMAGE_EDGE = 2000;
+const IMAGE_BYTES = 3_750_000;
+/** Text and image references of the current user turn; an offloaded image becomes a note naming it. */
+function userInput(messages, what) {
+  const texts = [], images = [];
+  for (const block of messages.flatMap(m => m.content)) {
+    if (block.type === 'text') texts.push(block.text);
+    else if (block.type === 'image' && block.offloaded) texts.push(`[Image ${block.attachment?.name ?? ''} was removed from this conversation to save space.]`);
+    else if (block.type === 'image') images.push(block.attachment);
+    else throw new Error(`${what} accepts text and images; ${block.type} attachments are not supported.`);
+  }
+  let prompt = texts.join('\n\n');
+  if (!prompt.trim() && images.length) prompt = 'See the attached image.';
+  if (!prompt.trim() || prompt.length > 100_000) throw new Error(`${what} requires a nonempty prompt within 100,000 characters.`);
+  return { prompt, images };
+}
 function promptOf(messages) {
   let start = 0;
   for (let i = 0; i < messages.length; i++) if (messages[i].role === 'assistant') start = i + 1;
-  const users = messages.slice(start).filter(m => m.role === 'user' && !['runtime-context','subagent-return'].includes(m.source?.kind));
-  if (users.some(m => m.content.some(b => b.type !== 'text'))) throw new Error('CLI child currently accepts text prompts only; image and file attachments are not supported.');
-  const prompt = users.flatMap(m => m.content.map(b => b.text)).join('\n\n');
-  if (!prompt.trim() || prompt.length > 100_000) throw new Error('CLI child requires a nonempty text prompt within 100,000 characters.');
-  return prompt;
+  return userInput(messages.slice(start).filter(m => m.role === 'user' && !['runtime-context','subagent-return'].includes(m.source?.kind)), 'CLI child');
 }
 function chatPromptOf(messages) {
   let start = messages.length;
@@ -27,10 +40,7 @@ function chatPromptOf(messages) {
     if (previous.role === 'assistant' && chatText(previous).trim()) break;
     start--;
   }
-  const current = messages.slice(start).filter(chatUser);
-  if (current.some(m => m.content.some(b => b.type !== 'text'))) throw new Error('Subscription chats accept text only; attachments are not supported.');
-  const prompt = current.map(chatText).join('\n\n');
-  if (!prompt.trim() || prompt.length > 100_000) throw new Error('Subscription chat requires a nonempty text prompt within 100,000 characters.');
+  const { prompt, images } = userInput(messages.slice(start).filter(chatUser), 'Subscription chat');
   const history = [];
   let bytes = 0;
   for (let i = start - 1; i >= 0; i--) {
@@ -43,11 +53,12 @@ function chatPromptOf(messages) {
     if (bytes > MAX_CHAT_HISTORY) break;
     history.push(line);
   }
-  if (!history.length) return prompt;
-  return `Previous chat messages (JSON lines, for context):\n${history.reverse().join('\n')}\n\nCurrent user request:\n${prompt}`;
+  if (!history.length) return { prompt, images };
+  return { prompt:`Previous chat messages (JSON lines, for context):\n${history.reverse().join('\n')}\n\nCurrent user request:\n${prompt}`, images };
 }
+// Codex and Claude Code both take image input, so both routes declare it to DSH.
 function modelInfo(provider, account) {
-  return { provider, id:account.id, name:`${LABELS[account.provider]} · подписка · ${account.name}`, inputModalities:['text'] };
+  return { provider, id:account.id, name:`${LABELS[account.provider]} · подписка · ${account.name}`, inputModalities:['text','image'] };
 }
 function* textBlock(index, text) {
   yield { type:'block-start', index, blockType:'text' };
@@ -85,6 +96,19 @@ export async function installNativeBridge(ctx, service) {
   ctx.on('agent/created', ({ agent }) => configure(agent));
   ctx.on('agent/disposed', ({ agent }) => { cleanups.delete(agent); });
   for (const agent of ctx.agents.list()) configure(agent);
+  async function readImages(refs, signal) {
+    if (!refs.length) return [];
+    const store = ctx.get('attachments');
+    if (!store) throw new Error('Image input needs the DSH attachment service, which is not loaded.');
+    const images = [];
+    for (const ref of refs) {
+      const scale = Math.min(1, IMAGE_EDGE / Math.max(ref.width, ref.height));
+      const target = { width: Math.max(1, Math.round(ref.width * scale)), height: Math.max(1, Math.round(ref.height * scale)), maxBytes: IMAGE_BYTES };
+      const version = await store.readImageRequest(ref, target, signal);
+      images.push({ mediaType: version.mediaType, data: version.data });
+    }
+    return images;
+  }
   class CliAdapter extends LlmAdapter {
     providerInfo(provider) { return { id: provider, name: `${LABELS[routeProvider(provider)]} · подписка` }; }
     providerRetryPolicy() { return { mode: 'normal', maxRetries: 0, retryableCodes: [], initialDelayMs: 1000, maxDelayMs: 1000, jitterRatio: 0 }; }
@@ -153,10 +177,13 @@ export async function installNativeBridge(ctx, service) {
           if (call) { appendResult(call, event.text, Boolean(event.isError)); calls.delete(remoteId); }
         }
       }
-      const operation = Promise.resolve().then(() => service.runAgentTurn(options.model, {
-        cwd, permissionMode: policy.mode, threadId: old?.threadId, expectedProvider:provider, ephemeral:!child,
-        prompt: child ? promptOf(options.messages) : chatPromptOf(options.messages), signal, onEvent,
-      })).then(value => { result = value; }, error => { failure = error; }).finally(() => {
+      const operation = Promise.resolve().then(async () => {
+        const input = child ? promptOf(options.messages) : chatPromptOf(options.messages);
+        return service.runAgentTurn(options.model, {
+          cwd, permissionMode: policy.mode, threadId: old?.threadId, expectedProvider:provider, ephemeral:!child,
+          prompt: input.prompt, images: await readImages(input.images, signal), signal, onEvent,
+        });
+      }).then(value => { result = value; }, error => { failure = error; }).finally(() => {
         settled = true;
         wake?.();
       });

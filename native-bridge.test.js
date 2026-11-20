@@ -92,7 +92,10 @@ async function mainChat(t, runner = async (_id, opts) => {
     agents:{ list:()=>[agent],get:()=>agent,turnBoundaryOf:()=>({ openTurnStartSeq:1,lastStepStartSeq:2 }) },
     sandboxPolicy:{ resolve:()=>({ mode }) },workingDirectory:{ get:()=>'/project' },
     llm:{ registerAdapter(_routes,value){ adapter=value; } },subagents:{ registerProvider(){} },
+    get:name=>name==='attachments' ? attachments : undefined,
   };
+  const reads = [];
+  const attachments = { async readImageRequest(ref,target){ reads.push({ ref,target }); return { mediaType:'image/png',data:new Uint8Array([ref.width % 256,1,2]) }; } };
   t.after(async () => {
     for (const dispose of effects.reverse()) await dispose?.();
     await rm(root,{ recursive:true,force:true });
@@ -111,10 +114,10 @@ async function mainChat(t, runner = async (_id, opts) => {
     for await (const chunk of adapter.stream({ ...selection,sessionId:session.id,messages,...extra })) chunks.push(chunk);
     return chunks;
   }
-  return { adapter,ask,calls,events,root,select: next=>{ selection=next; },restrict:()=>{ mode='workspace-write'; } };
+  return { adapter,ask,calls,events,root,reads,ctx,select: next=>{ selection=next; },restrict:()=>{ mode='workspace-write'; } };
 }
 
-test('the regular catalog has separate discoverable subscription profiles and text-only metadata', async t => {
+test('the regular catalog has separate discoverable subscription profiles that take images', async t => {
   const { adapter } = await mainChat(t);
   for (const [provider,id,vendor] of [[CODEX,codeAccount,'Codex'],[CLAUDE,claudeAccount,'Claude Code']]) {
     const [model] = await adapter.listModels(provider);
@@ -123,7 +126,7 @@ test('the regular catalog has separate discoverable subscription profiles and te
     assert.match(model.name,new RegExp(vendor));
     assert.match(model.name,/подписка/i);
     assert.equal((await adapter.resolveModel(provider,id)).name,model.name);
-    assert.equal(model.inputModalities.join(),'text');
+    assert.equal(model.inputModalities.join(),'text,image');
   }
   await assert.rejects(adapter.resolveModel(CODEX,claudeAccount),/аккаунт/i);
 });
@@ -164,10 +167,33 @@ test('a CLI that ends without any answer is not shown as successfully completed'
   assert.equal(calls.length,1);
 });
 
-test('restricted chats, current attachments and auxiliary calls never start the CLI', async t => {
+test('images in the current message reach the CLI, scaled for the request', async t => {
+  const { ask,calls,reads } = await mainChat(t);
+  const image = { attachmentId:'att-1',mediaType:'image/png',bytes:10,width:4000,height:1000,name:'shot.png' };
+  await ask([{ role:'user',source:{ kind:'user' },content:[{ type:'text',text:'Что на скрине?' },{ type:'image',attachment:image }] }]);
+  assert.equal(calls[0].opts.prompt,'Что на скрине?');
+  assert.equal(calls[0].opts.permissionMode,'danger-full-access');
+  assert.equal(JSON.stringify([...calls[0].opts.images].map(i=>({ mediaType:i.mediaType,data:[...i.data] }))),JSON.stringify([{ mediaType:'image/png',data:[4000 % 256,1,2] }]));
+  assert.deepEqual({ ...reads[0].target },{ width:2000,height:500,maxBytes:3_750_000 });
+  await ask([{ role:'user',source:{ kind:'user' },content:[{ type:'image',attachment:{ ...image,width:100,height:50 } }] }]);
+  assert.equal(calls[1].opts.prompt,'See the attached image.');
+  assert.deepEqual({ ...reads[1].target },{ width:100,height:50,maxBytes:3_750_000 });
+  await ask([{ role:'user',source:{ kind:'user' },content:[{ type:'text',text:'Дальше' },{ type:'image',attachment:image,offloaded:true }] }]);
+  assert.match(calls[2].opts.prompt,/Image shot\.png was removed/);
+  assert.equal(calls[2].opts.images.length,0);
+});
+
+test('an image without the attachment service fails before the CLI starts', async t => {
+  const { ask,calls,ctx } = await mainChat(t);
+  ctx.get = () => undefined;
+  await assert.rejects(ask([{ role:'user',source:{ kind:'user' },content:[{ type:'image',attachment:{ width:1,height:1 } }] }]),/attachment service/);
+  assert.equal(calls.length,0);
+});
+
+test('restricted chats, unsupported attachments and auxiliary calls never start the CLI', async t => {
   const { ask,calls,restrict } = await mainChat(t);
   await assert.rejects(ask([turnInput('Вопрос')],{ purpose:'compaction' }),/auxiliary/i);
-  await assert.rejects(ask([{ role:'user',source:{ kind:'user' },content:[{ type:'image' }] }]),/text/i);
+  await assert.rejects(ask([{ role:'user',source:{ kind:'user' },content:[{ type:'file' }] }]),/text and images/i);
   restrict();
   await assert.rejects(ask([turnInput('Вопрос')]),/Full access/);
   assert.equal(calls.length,0);

@@ -1,4 +1,7 @@
 import { spawn } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { claudeLimitWindows } from './cli.js';
 
@@ -9,11 +12,14 @@ const MAX_TEXT = 128 * 1024;
 const OVERSIZED_HEAD = 64 * 1024;
 const TIMEOUT = 30 * 60_000;
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,159}$/;
+const IMAGE_TYPES = { 'image/png':'png', 'image/jpeg':'jpg', 'image/gif':'gif', 'image/webp':'webp' };
+const MAX_IMAGES = 20;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 // Claude Code's own modes for each DSH sandbox mode; Full access in DSH means no CLI permission checks either.
 const CLAUDE_MODES = { 'read-only':'plan', 'workspace-write':'acceptEdits', 'danger-full-access':'bypassPermissions' };
 
 /** Construct persistent CLI argv; execution cwd must match the supplied workspace. */
-export function agentArgs(provider, { cwd, permissionMode, threadId, ephemeral = false } = {}) {
+export function agentArgs(provider, { cwd, permissionMode, threadId, ephemeral = false, imagePaths = [], streamInput = false } = {}) {
   if (!['read-only', 'workspace-write', 'danger-full-access'].includes(permissionMode)) throw new Error('Unsupported agent permission mode');
   if (typeof cwd !== 'string' || !cwd) throw new Error('Agent workspace is required');
   if (threadId !== undefined && (typeof threadId !== 'string' || !ID.test(threadId))) throw new Error('Invalid CLI thread identifier');
@@ -23,10 +29,10 @@ export function agentArgs(provider, { cwd, permissionMode, threadId, ephemeral =
       '-c', 'cli_auth_credentials_store="file"', '-a', 'never', '-s', permissionMode, '-C', cwd,
       '--disable', 'multi_agent', '--disable', 'multi_agent_v2', 'exec',
     ];
-    return [...base, ...(threadId ? ['resume'] : []), '--json', '--skip-git-repo-check', ...(ephemeral ? ['--ephemeral'] : []), ...(threadId ? [threadId] : []), '-'];
+    return [...base, ...(threadId ? ['resume'] : []), ...imagePaths.map(path => `--image=${path}`), '--json', '--skip-git-repo-check', ...(ephemeral ? ['--ephemeral'] : []), ...(threadId ? [threadId] : []), '-'];
   }
   if (provider === 'claude') {
-    return ['-p', '--output-format', 'stream-json', '--verbose', '--tools', 'default', '--permission-mode', CLAUDE_MODES[permissionMode], '--permission-prompts', 'none', ...(ephemeral ? ['--no-session-persistence'] : []), ...(threadId ? ['--resume', threadId] : [])];
+    return ['-p', ...(streamInput ? ['--input-format', 'stream-json'] : []), '--output-format', 'stream-json', '--verbose', '--tools', 'default', '--permission-mode', CLAUDE_MODES[permissionMode], '--permission-prompts', 'none', ...(ephemeral ? ['--no-session-persistence'] : []), ...(threadId ? ['--resume', threadId] : [])];
   }
   throw new Error('Unsupported CLI provider');
 }
@@ -34,10 +40,35 @@ export function agentArgs(provider, { cwd, permissionMode, threadId, ephemeral =
 const capped = value => typeof value === 'string' ? value.slice(0, MAX_TEXT) : '';
 const printable = value => typeof value === 'string' ? capped(value) : capped(JSON.stringify(value ?? ''));
 
-/** Run a persistent CLI turn; normalized events are awaited sequentially with bounded backpressure. */
-export async function runAgent({ provider, exe, env, cwd, permissionMode, threadId, ephemeral, prompt, signal, onEvent }) {
-  const args = agentArgs(provider, { cwd, permissionMode, threadId, ephemeral });
+/**
+ * Run a persistent CLI turn; normalized events are awaited sequentially with bounded backpressure.
+ * `images` ({mediaType, data}) go to Codex as temporary files removed after the turn, and to Claude Code inside its stream-json input.
+ */
+export async function runAgent({ images = [], ...options }) {
+  if (!Array.isArray(images) || images.length > MAX_IMAGES || images.some(image => !IMAGE_TYPES[image?.mediaType] || !(image.data instanceof Uint8Array) || !image.data.length || image.data.length > MAX_IMAGE_BYTES)) throw new Error('Invalid agent images');
+  const { prompt } = options;
   if (typeof prompt !== 'string' || !prompt.trim() || Buffer.byteLength(prompt) > 512 * 1024) throw new Error('Invalid agent prompt');
+  if (!images.length) return runTurn(options, { input: prompt });
+  if (options.provider === 'claude') {
+    const content = [{ type:'text', text:prompt }, ...images.map(image => ({ type:'image', source:{ type:'base64', media_type:image.mediaType, data:Buffer.from(image.data).toString('base64') } }))];
+    return runTurn(options, { input: JSON.stringify({ type:'user', message:{ role:'user', content } }) + '\n', streamInput: true });
+  }
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-subscription-images-'));
+  try {
+    const imagePaths = [];
+    for (const [index, image] of images.entries()) {
+      const path = join(dir, `image-${index + 1}.${IMAGE_TYPES[image.mediaType]}`);
+      await writeFile(path, image.data, { mode: 0o600 });
+      imagePaths.push(path);
+    }
+    return await runTurn(options, { input: prompt, imagePaths });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function runTurn({ provider, exe, env, cwd, permissionMode, threadId, ephemeral, signal, onEvent }, { input, imagePaths, streamInput }) {
+  const args = agentArgs(provider, { cwd, permissionMode, threadId, ephemeral, imagePaths, streamInput });
   if (signal?.aborted) throw new Error('Agent cancelled');
   if (typeof onEvent !== 'function') throw new Error('Agent event callback is required');
   const child = spawn(exe, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32', windowsHide: true });
@@ -235,7 +266,7 @@ export async function runAgent({ provider, exe, env, cwd, permissionMode, thread
     void drain();
     if (!processing && !queue.length) resolveDone();
   });
-  child.stdin.end(prompt);
+  child.stdin.end(input);
   if (signal?.aborted) abort();
   try {
     await done;

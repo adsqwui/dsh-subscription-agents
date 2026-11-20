@@ -35,6 +35,7 @@ You already pay for ChatGPT or Claude. DeepSeek Harness is a good place to run a
 - **Nested sidebar.** Child chats fold under their parent in the workspace sidebar.
 - **Quota you can see.** Codex limit windows come from the Codex App Server; Claude Code windows come from its stream events. The tightest fresh window decides which account has the most headroom.
 - **Agent limits at a glance.** A compact list of every account and its current limit sits at the bottom of the left sidebar.
+- **Images.** Both routes tell DSH they accept images, so you can paste a screenshot into a subscription chat or a child task. Codex gets it through `--image`, Claude Code inside its stream-json input.
 - **Fails closed.** Restricted sessions, unknown DSH versions, missing CLIs and quota errors stop the task with a clear message instead of quietly doing something else.
 
 ## How it works
@@ -90,7 +91,7 @@ To work on the code instead, clone the repository and give **Add plugin** the ab
 
 ### Chat with a subscription
 
-Pick **Codex · подписка · &lt;name&gt;** or **Claude Code · подписка · &lt;name&gt;** in the model picker or with `/model`. The conversation runs through that account only. If its CLI is missing or out of quota, the turn fails; the plugin never falls back to another route or reads API keys. Attachments are not supported yet. See the [model picker spec](spec/subscription-model-picker.md).
+Pick **Codex · подписка · &lt;name&gt;** or **Claude Code · подписка · &lt;name&gt;** in the model picker or with `/model`. The conversation runs through that account only. If its CLI is missing or out of quota, the turn fails; the plugin never falls back to another route or reads API keys. Images in your message go to the CLI with it (PNG, JPEG, GIF or WebP, up to 20, scaled to 2000 px on the long side); other file attachments are not supported yet. See the [model picker spec](spec/subscription-model-picker.md).
 
 ### Delegate work
 

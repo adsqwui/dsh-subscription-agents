@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm, chmod } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm, chmod, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { agentArgs, runAgent } from './agent-runner.js';
@@ -15,11 +15,46 @@ async function fixture(t, lines, suffix = '') {
   return { exe, cwd:root, env:{PATH:process.env.PATH}, permissionMode:'workspace-write', prompt:'Test fixture' };
 }
 
-test('Full access runs both CLIs without permission checks', () => {
-  const claude = agentArgs('claude',{cwd:'/project',permissionMode:'danger-full-access'});
-  assert.equal(claude[claude.indexOf('--permission-mode')+1],'bypassPermissions');
-  const codex = agentArgs('codex',{cwd:'/project',permissionMode:'danger-full-access'});
+test('Full access runs Claude Code without permission checks; images switch its input to stream-json', () => {
+  const full = agentArgs('claude',{cwd:'/project',permissionMode:'danger-full-access'});
+  assert.equal(full[full.indexOf('--permission-mode')+1],'bypassPermissions');
+  assert.equal(full.includes('--input-format'),false);
+  const withImages = agentArgs('claude',{cwd:'/project',permissionMode:'danger-full-access',streamInput:true});
+  assert.deepEqual(withImages.slice(0,3),['-p','--input-format','stream-json']);
+  const codex = agentArgs('codex',{cwd:'/project',permissionMode:'danger-full-access',threadId:UUID,imagePaths:['/tmp/a.png','/tmp/b.jpg']});
+  assert.deepEqual(codex.slice(codex.indexOf('resume')),['resume','--image=/tmp/a.png','--image=/tmp/b.jpg','--json','--skip-git-repo-check',UUID,'-']);
   assert.equal(codex[codex.indexOf('-s')+1],'danger-full-access');
+});
+
+test('images reach the CLI: files for Codex (removed afterwards), base64 stream-json for Claude Code', async t => {
+  const record = async provider => {
+    const done = provider === 'codex'
+      ? [{type:'thread.started',thread_id:UUID},{type:'turn.completed',usage:{input_tokens:1}}]
+      : [{type:'system',subtype:'init',session_id:UUID},{type:'result',subtype:'success',session_id:UUID,result:'Seen',is_error:false}];
+    const conf = await fixture(t,done);
+    const log = join(conf.cwd,'seen.json');
+    await writeFile(conf.exe,`#!${process.execPath}
+const fs=require('node:fs');let input='';process.stdin.on('data',d=>input+=d);process.stdin.on('end',()=>{
+const images=process.argv.filter(a=>a.startsWith('--image=')).map(a=>a.slice(8));
+fs.writeFileSync(${JSON.stringify(log)},JSON.stringify({argv:process.argv.slice(2),input,files:images.map(p=>[p,[...fs.readFileSync(p)]])}));
+${done.map(x=>`process.stdout.write(${JSON.stringify(JSON.stringify(x)+'\n')});`).join('')}});
+`);
+    const images=[{mediaType:'image/png',data:new Uint8Array([1,2,3])},{mediaType:'image/jpeg',data:new Uint8Array([4,5])}];
+    await runAgent({...conf,provider,permissionMode:'danger-full-access',prompt:'Describe',images,onEvent:async()=>{}});
+    return JSON.parse(await readFile(log,'utf8'));
+  };
+  const codex = await record('codex');
+  assert.equal(codex.input,'Describe');
+  assert.deepEqual(codex.files.map(([p,bytes])=>[p.split('.').pop(),bytes]),[['png',[1,2,3]],['jpg',[4,5]]]);
+  for (const [p] of codex.files) await assert.rejects(stat(p),{code:'ENOENT'});
+  const claude = await record('claude');
+  assert(claude.argv.includes('stream-json') && claude.argv[claude.argv.indexOf('--input-format')+1]==='stream-json');
+  const message = JSON.parse(claude.input);
+  assert.equal(message.type,'user');
+  assert.deepEqual(message.message.content,[{type:'text',text:'Describe'},{type:'image',source:{type:'base64',media_type:'image/png',data:'AQID'}},{type:'image',source:{type:'base64',media_type:'image/jpeg',data:'BAU='}}]);
+  const conf = await fixture(t,[]);
+  await assert.rejects(runAgent({...conf,provider:'codex',images:[{mediaType:'image/tiff',data:new Uint8Array([1])}],onEvent:async()=>{}}),/images/);
+  await assert.rejects(runAgent({...conf,provider:'codex',images:Array.from({length:21},()=>({mediaType:'image/png',data:new Uint8Array([1])})),onEvent:async()=>{}}),/images/);
 });
 
 test('argv preserves persistence, workspace and safe permission choices', () => {
