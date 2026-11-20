@@ -54,6 +54,21 @@ test('Claude tool calls, results, and duplicate assistant messages normalize', a
   assert.equal(events[3].name,'Read'); assert.equal(events[3].text,'file text');
 });
 
+test('Claude quota events read unifiedWindows from Claude Code 2.1.x', async t => {
+  const info = {status:'allowed',resetsAt:1795185000,rateLimitType:'five_hour',
+    unifiedWindows:{five_hour:{utilization:0.58,resetsAt:1795185000,status:'allowed'},seven_day:{utilization:0.46,resetsAt:1795528800,status:'allowed'},seven_day_opus:{status:'rejected'},mystery:{utilization:0.1}}};
+  const conf=await fixture(t,[{type:'system',subtype:'init',session_id:UUID},{type:'rate_limit_event',session_id:UUID,rate_limit_info:info},{type:'result',subtype:'success',session_id:UUID,result:'Complete',is_error:false}]);
+  const events=[];
+  await runAgent({...conf,provider:'claude',onEvent:async e=>events.push(e)});
+  const quotas=events.filter(e=>e.type==='quota');
+  assert.equal(quotas.length,1);
+  assert.deepEqual(quotas[0].usage.windows.map(w=>({...w})),[
+    {label:'5 часов',usedPercent:58,resetAt:1795185000000},
+    {label:'7 дней',usedPercent:46,resetAt:1795528800000},
+    {label:'Opus · 7 дней',usedPercent:100},
+  ]);
+});
+
 test('Claude quota events forward known fresh windows without replacing token usage', async t => {
   const limits = [
     {status:'allowed',rateLimitType:'five_hour',utilization:0.25,resetsAt:1800000000},

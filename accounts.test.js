@@ -30,6 +30,14 @@ test('validates login URLs and parses Claude rate-limit events', () => {
   assert.equal(parsed.usage.windows[0].usedPercent,25);
   assert.equal(parsed.usage.windows[0].resetAt,1800000000000);
 });
+test('reads every Claude window from unifiedWindows (Claude Code 2.1.x)', () => {
+  // Shape sent by Claude Code 2.1.319: no top-level utilization, the numbers live in unifiedWindows.
+  const info = {status:'allowed',resetsAt:1795185000,rateLimitType:'five_hour',overageStatus:'rejected',isUsingOverage:false,
+    unifiedWindows:{five_hour:{utilization:0.58,resetsAt:1795185000,status:'allowed'},seven_day:{utilization:0.46,resetsAt:1795528800,status:'allowed'}}};
+  const parsed = inference('claude',okCli([json({type:'rate_limit_event',rate_limit_info:info}),json({type:'result',result:'OK'})].join('\n')));
+  assert.equal(parsed.text,'OK');
+  assert.deepEqual(parsed.usage.windows.map(w=>({...w})),[{label:'5 часов',usedPercent:58,resetAt:1795185000000},{label:'7 дней',usedPercent:46,resetAt:1795528800000}]);
+});
 test('account lifecycle, smoke, user-only enable, delegation and persistence', async () => {
   const root = await mkdtemp(join(tmpdir(),'dsh-sub-agents-test-'));
   const calls=[];

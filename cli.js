@@ -75,6 +75,19 @@ export function subscribed(provider, result) {
     return value.loggedIn === true && value.authMethod === 'claude.ai';
   } catch { return false; }
 }
+const CLAUDE_WINDOWS = { five_hour:'5 часов', seven_day:'7 дней', seven_day_sonnet:'Sonnet · 7 дней', seven_day_opus:'Opus · 7 дней' };
+/** Older Claude Code puts one window's numbers on rate_limit_info itself; 2.1.x lists every window under unifiedWindows. */
+export function claudeLimitWindows(info) {
+  if (!info || typeof info !== 'object') return [];
+  const unified = info.unifiedWindows && typeof info.unifiedWindows === 'object' ? Object.entries(info.unifiedWindows) : [];
+  const entries = unified.some(([type]) => type === info.rateLimitType) ? unified : [[info.rateLimitType, info], ...unified];
+  return entries.flatMap(([type, lim]) => {
+    const label = CLAUDE_WINDOWS[type];
+    const used = lim?.status === 'rejected' ? 1 : lim?.utilization;
+    if (!label || !Number.isFinite(used) || used < 0 || used > 1) return [];
+    return [{ label, usedPercent: Math.round(used * 10000) / 100, ...(Number.isFinite(lim.resetsAt) && lim.resetsAt > 0 && lim.resetsAt <= 8.64e12 ? { resetAt: lim.resetsAt * 1000 } : {}) }];
+  });
+}
 function readEvents(stdout) {
   return stdout.split(/\r?\n/).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
 }
@@ -82,12 +95,7 @@ export function inference(provider, result) {
   const events = readEvents(result.stdout);
   const limits = events.filter(e => e?.type === 'rate_limit_event').map(e => e.rate_limit_info).filter(v => v && typeof v === 'object');
   const windows = new Map();
-  for (const lim of limits) {
-    const label = ({ five_hour:'5 часов', seven_day:'7 дней', seven_day_sonnet:'Sonnet · 7 дней', seven_day_opus:'Opus · 7 дней' })[lim.rateLimitType];
-    const used = lim.status === 'rejected' ? 1 : lim.utilization;
-    if (!label || !Number.isFinite(used) || used < 0 || used > 1) continue;
-    windows.set(label, { label, usedPercent: used * 100, ...(Number.isFinite(lim.resetsAt) && lim.resetsAt > 0 ? { resetAt: lim.resetsAt * 1000 } : {}) });
-  }
+  for (const w of limits.flatMap(claudeLimitWindows)) windows.set(w.label, w);
   const usage = windows.size ? { updatedAt: Date.now(), windows:[...windows.values()] } : undefined;
   const rejected = limits.some(x => x.status === 'rejected');
   const last = events.filter(e => e?.type === 'result').at(-1);

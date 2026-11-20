@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
+import { claudeLimitWindows } from './cli.js';
 
 const MAX_PENDING = 2 * 1024 * 1024;
 const MAX_LINE = 1024 * 1024;
@@ -140,14 +141,8 @@ export async function runAgent({ provider, exe, env, cwd, permissionMode, thread
     if (event.parent_tool_use_id != null) return;
     if (typeof event.session_id === 'string') await setThread(event.session_id);
     if (event.type === 'rate_limit_event') {
-      const info = event.rate_limit_info;
-      const label = ({ five_hour: '5 часов', seven_day: '7 дней', seven_day_sonnet: 'Sonnet · 7 дней', seven_day_opus: 'Opus · 7 дней' })[info?.rateLimitType];
-      const used = info?.status === 'rejected' ? 1 : info?.utilization;
-      if (label && Number.isFinite(used) && used >= 0 && used <= 1) {
-        const window = { label, usedPercent: used * 100 };
-        if (Number.isFinite(info.resetsAt) && info.resetsAt > 0 && info.resetsAt <= 8.64e12) window.resetAt = info.resetsAt * 1000;
-        await emit({ type: 'quota', usage: { updatedAt: Date.now(), windows: [window] } });
-      }
+      const windows = claudeLimitWindows(event.rate_limit_info);
+      if (windows.length) await emit({ type: 'quota', usage: { updatedAt: Date.now(), windows } });
     }
     if (event.type === 'assistant' && Array.isArray(event.message?.content)) {
       for (const [index, block] of event.message.content.entries()) {
