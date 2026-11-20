@@ -115,7 +115,7 @@ The child chat appears under its parent. Open it to watch progress or to send a 
 
 ## Quota and account choice
 
-Codex snapshots refresh about every three minutes and after each request. Claude Code reports windows only when its stream includes them, and the plugin never sends paid background prompts to find out. A snapshot older than six minutes, or one past its reset time, no longer affects the choice. Among enabled accounts, the one with the most headroom in its tightest fresh window wins; accounts with unknown quota come after accounts with known headroom. A quota error is never retried on another account.
+Every minute the plugin refreshes quota for ready, idle Codex and Claude Code accounts through their CLIs. Claude Code supplies the snapshot through its prompt-free `get_usage` request on supported versions. A snapshot older than six minutes, or one past its reset time, no longer affects the choice. Among enabled accounts, the one with the most headroom in its tightest fresh window wins; accounts with unknown quota come after accounts with known headroom. A quota error is never retried on another account.
 
 ## Compatibility
 

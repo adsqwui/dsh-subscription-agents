@@ -66,7 +66,7 @@ export function command(provider, op) {
   if (op === 'status') return ['auth','status','--json'];
   if (op === 'logout') return ['auth','logout'];
   // Answers the SDK initialize request (which lists models) and exits without calling a model.
-  if (op === 'models') return ['--safe-mode','-p','--input-format','stream-json','--output-format','stream-json','--verbose','--tools','','--strict-mcp-config','--no-chrome','--no-session-persistence'];
+  if (op === 'models' || op === 'usage') return ['--safe-mode','-p','--input-format','stream-json','--output-format','stream-json','--verbose','--tools','','--strict-mcp-config','--no-chrome','--no-session-persistence'];
   return ['--safe-mode','-p','--output-format','stream-json','--verbose','--tools','','--strict-mcp-config','--no-chrome','--permission-prompts','none','--no-session-persistence'];
 }
 export const claudeModelsRequest = JSON.stringify({ type:'control_request', request_id:'models', request:{ subtype:'initialize' } }) + '\n';
@@ -99,6 +99,22 @@ export function subscribed(provider, result) {
   } catch { return false; }
 }
 const CLAUDE_WINDOWS = { five_hour:'5 часов', seven_day:'7 дней', seven_day_sonnet:'Sonnet · 7 дней', seven_day_opus:'Opus · 7 дней' };
+export const claudeUsageRequest = JSON.stringify({ type:'control_request', request_id:'usage', request:{ subtype:'get_usage', skip_behaviors:true } }) + '\n';
+export function claudeUsage(result) {
+  if (result.code !== 0) return;
+  const reply = readEvents(result.stdout).find(e => e?.type === 'control_response' && e.response?.request_id === 'usage')?.response;
+  const data = reply?.response;
+  if (reply?.subtype !== 'success' || !data?.rate_limits_available) return;
+  const windows = [];
+  for (const [key, label] of Object.entries(CLAUDE_WINDOWS)) {
+    const limit = data.rate_limits?.[key];
+    const usedPercent = limit?.utilization;
+    if (!Number.isFinite(usedPercent) || usedPercent < 0 || usedPercent > 100) continue;
+    const resetAt = Date.parse(limit.resets_at);
+    windows.push({label, usedPercent, ...(Number.isFinite(resetAt) ? {resetAt} : {})});
+  }
+  if (windows.length) return {updatedAt:Date.now(), windows};
+}
 /** Older Claude Code puts one window's numbers on rate_limit_info itself; 2.1.x lists every window under unifiedWindows. */
 export function claudeLimitWindows(info) {
   if (!info || typeof info !== 'object') return [];

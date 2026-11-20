@@ -1,7 +1,7 @@
 import { mkdir, chmod, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { cliEnv, command, executable, inference, run, subscribed, codexPrefix, callTimeout, claudeModels, claudeModelsRequest } from './cli.js';
+import { cliEnv, command, executable, inference, run, subscribed, codexPrefix, callTimeout, claudeModels, claudeModelsRequest, claudeUsage, claudeUsageRequest } from './cli.js';
 import { readCodexModels, readCodexUsage } from './codex-usage.js';
 import { runAgent } from './agent-runner.js';
 
@@ -97,7 +97,13 @@ export async function makeService(root, options = {}) {
     return valid;
   }
   async function quota(a, signal) {
-    if (a.provider !== 'codex') return;
+    if (a.provider === 'claude') {
+      try {
+        const usage = claudeUsage(await execute(a,'usage',signal,{input:claudeUsageRequest}));
+        if (usage) a.usage = usage;
+      } catch { /* Keep the previous snapshot when the CLI is unavailable. */ }
+      return;
+    }
     const exe = (await availability())[a.provider];
     if (!exe) return;
     try {
@@ -151,7 +157,7 @@ export async function makeService(root, options = {}) {
     return start(a,'refresh',async signal => { if (await status(a,signal)) { await quota(a,signal); await catalog(a,signal); } });
   }
   function background(p) { p?.catch(() => {}); }
-  const interval = setInterval(() => { for (const a of db.accounts) if (a.provider === 'codex') background(refresh(a)); },180_000);
+  const interval = setInterval(() => { for (const a of db.accounts) background(refresh(a)); },60_000);
   interval.unref?.();
   async function action(body, {user=false, signal}={}) {
     if (life.signal.aborted || !body || typeof body !== 'object' || Array.isArray(body)) return fail('Некорректный запрос.');
