@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { makeService, officialLoginUrl, pickAccount, remaining } from './accounts.js';
-import { inference, subscribed } from './cli.js';
+import { claudeUsage, inference, subscribed } from './cli.js';
 
 const okCli = stdout => ({code:0,stdout,stderr:''});
 const json = v => JSON.stringify(v);
@@ -37,6 +37,22 @@ test('reads every Claude window from unifiedWindows (Claude Code 2.1.x)', () => 
   const parsed = inference('claude',okCli([json({type:'rate_limit_event',rate_limit_info:info}),json({type:'result',result:'OK'})].join('\n')));
   assert.equal(parsed.text,'OK');
   assert.deepEqual(parsed.usage.windows.map(w=>({...w})),[{label:'5 часов',usedPercent:58,resetAt:1795185000000},{label:'7 дней',usedPercent:46,resetAt:1795528800000}]);
+});
+test('reads Claude limits from the prompt-free get_usage reply', () => {
+  const reply = rate_limits => okCli([json({type:'system',subtype:'init'}),json({type:'control_response',response:{subtype:'success',request_id:'usage',response:{subscription_type:'pro',rate_limits_available:true,rate_limits}}})].join('\n'));
+  const usage = claudeUsage(reply({
+    five_hour:{utilization:7,resets_at:'2026-11-20T20:50:00.301774+00:00'},
+    seven_day:{utilization:51,resets_at:'2026-11-24T14:00:00.301792+00:00'},
+    seven_day_opus:null, seven_day_sonnet:{utilization:140},
+  }));
+  assert.deepEqual(usage.windows.map(w=>({...w})),[
+    {label:'5 часов',usedPercent:7,resetAt:Date.parse('2026-11-20T20:50:00.301Z')},
+    {label:'7 дней',usedPercent:51,resetAt:Date.parse('2026-11-24T14:00:00.301Z')},
+  ]);
+  assert(Number.isFinite(usage.updatedAt));
+  assert.equal(claudeUsage(okCli(json({type:'control_response',response:{subtype:'success',request_id:'usage',response:{rate_limits_available:false}}}))),undefined);
+  assert.equal(claudeUsage(okCli(json({type:'control_response',response:{subtype:'error',request_id:'usage',error:'unknown subtype'}}))),undefined);
+  assert.equal(claudeUsage({code:1,stdout:'',stderr:'boom'}),undefined);
 });
 const MODELS = [{id:'gpt-x',name:'GPT X',inputModalities:['text','image'],isDefault:true},{id:'gpt-x-mini',name:'GPT X mini',inputModalities:['text']}];
 test('account lifecycle, smoke, user-only enable, delegation and persistence', async () => {
