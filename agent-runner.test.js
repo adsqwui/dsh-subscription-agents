@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, readFile, rm, chmod, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { agentArgs, runAgent } from './agent-runner.js';
+import { agentArgs, runAgent, tokenUsage } from './agent-runner.js';
 
 const UUID = '00000000-0000-4000-8000-000000000001';
 async function fixture(t, lines, suffix = '') {
@@ -55,6 +55,25 @@ ${done.map(x=>`process.stdout.write(${JSON.stringify(JSON.stringify(x)+'\n')});`
   const conf = await fixture(t,[]);
   await assert.rejects(runAgent({...conf,provider:'codex',images:[{mediaType:'image/tiff',data:new Uint8Array([1])}],onEvent:async()=>{}}),/images/);
   await assert.rejects(runAgent({...conf,provider:'codex',images:Array.from({length:21},()=>({mediaType:'image/png',data:new Uint8Array([1])})),onEvent:async()=>{}}),/images/);
+});
+
+test('a chosen model goes to the CLI, an invalid one is refused', () => {
+  const codex = agentArgs('codex',{cwd:'/project',permissionMode:'danger-full-access',model:'gpt-5.6-terra',threadId:UUID});
+  assert.deepEqual(codex.slice(codex.indexOf('-C'),codex.indexOf('-C')+4),['-C','/project','-m','gpt-5.6-terra']);
+  const claude = agentArgs('claude',{cwd:'/project',permissionMode:'danger-full-access',model:'claude-haiku-5-5'});
+  assert.equal(claude[claude.indexOf('--model')+1],'claude-haiku-5-5');
+  assert.equal(agentArgs('claude',{cwd:'/project',permissionMode:'danger-full-access'}).includes('--model'),false);
+  assert.throws(()=>agentArgs('codex',{cwd:'/project',permissionMode:'danger-full-access',model:'--oops'}),/model/);
+});
+
+test('CLI token reports become DSH usage with cached input kept apart', async t => {
+  assert.deepEqual({...tokenUsage('codex',{input_tokens:1000,cached_input_tokens:600,output_tokens:50,reasoning_output_tokens:20})},{inputTokens:400,outputTokens:50,totalTokens:1050,cacheReadTokens:600,reasoningTokens:20});
+  assert.deepEqual({...tokenUsage('claude',{input_tokens:10,cache_read_input_tokens:900,cache_creation_input_tokens:100,output_tokens:40})},{inputTokens:10,outputTokens:40,totalTokens:1050,cacheReadTokens:900,cacheWriteTokens:100});
+  assert.equal(tokenUsage('claude',{}),undefined);
+  assert.equal(tokenUsage('codex',undefined),undefined);
+  const conf=await fixture(t,[{type:'thread.started',thread_id:UUID},{type:'turn.completed',usage:{input_tokens:7,output_tokens:3}}]);
+  const result=await runAgent({...conf,provider:'codex',onEvent:async()=>{}});
+  assert.deepEqual({...result.tokens},{inputTokens:7,outputTokens:3,totalTokens:10});
 });
 
 test('argv preserves persistence, workspace and safe permission choices', () => {

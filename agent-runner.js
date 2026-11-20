@@ -12,6 +12,7 @@ const MAX_TEXT = 128 * 1024;
 const OVERSIZED_HEAD = 64 * 1024;
 const TIMEOUT = 30 * 60_000;
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,159}$/;
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,99}$/;
 const IMAGE_TYPES = { 'image/png':'png', 'image/jpeg':'jpg', 'image/gif':'gif', 'image/webp':'webp' };
 const MAX_IMAGES = 20;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -19,22 +20,41 @@ const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const CLAUDE_MODES = { 'read-only':'plan', 'workspace-write':'acceptEdits', 'danger-full-access':'bypassPermissions' };
 
 /** Construct persistent CLI argv; execution cwd must match the supplied workspace. */
-export function agentArgs(provider, { cwd, permissionMode, threadId, ephemeral = false, imagePaths = [], streamInput = false } = {}) {
+export function agentArgs(provider, { cwd, permissionMode, model, threadId, ephemeral = false, imagePaths = [], streamInput = false } = {}) {
   if (!['read-only', 'workspace-write', 'danger-full-access'].includes(permissionMode)) throw new Error('Unsupported agent permission mode');
   if (typeof cwd !== 'string' || !cwd) throw new Error('Agent workspace is required');
   if (threadId !== undefined && (typeof threadId !== 'string' || !ID.test(threadId))) throw new Error('Invalid CLI thread identifier');
   if (ephemeral && threadId) throw new Error('An ephemeral CLI request cannot resume a thread');
+  if (model !== undefined && (typeof model !== 'string' || !MODEL_ID.test(model))) throw new Error('Invalid CLI model');
+  const pick = model ? (provider === 'codex' ? ['-m', model] : ['--model', model]) : [];
   if (provider === 'codex') {
     const base = [
-      '-c', 'cli_auth_credentials_store="file"', '-a', 'never', '-s', permissionMode, '-C', cwd,
+      '-c', 'cli_auth_credentials_store="file"', '-a', 'never', '-s', permissionMode, '-C', cwd, ...pick,
       '--disable', 'multi_agent', '--disable', 'multi_agent_v2', 'exec',
     ];
     return [...base, ...(threadId ? ['resume'] : []), ...imagePaths.map(path => `--image=${path}`), '--json', '--skip-git-repo-check', ...(ephemeral ? ['--ephemeral'] : []), ...(threadId ? [threadId] : []), '-'];
   }
   if (provider === 'claude') {
-    return ['-p', ...(streamInput ? ['--input-format', 'stream-json'] : []), '--output-format', 'stream-json', '--verbose', '--tools', 'default', '--permission-mode', CLAUDE_MODES[permissionMode], '--permission-prompts', 'none', ...(ephemeral ? ['--no-session-persistence'] : []), ...(threadId ? ['--resume', threadId] : [])];
+    return ['-p', ...(streamInput ? ['--input-format', 'stream-json'] : []), '--output-format', 'stream-json', '--verbose', '--tools', 'default', '--permission-mode', CLAUDE_MODES[permissionMode], '--permission-prompts', 'none', ...pick, ...(ephemeral ? ['--no-session-persistence'] : []), ...(threadId ? ['--resume', threadId] : [])];
   }
   throw new Error('Unsupported CLI provider');
+}
+
+const count = value => Number.isSafeInteger(value) && value >= 0 ? value : 0;
+/**
+ * DSH token accounting from a CLI's own usage report, or undefined when it has none.
+ * Codex counts cached input inside input_tokens; DSH keeps the two apart, so cached tokens are subtracted.
+ */
+export function tokenUsage(provider, usage) {
+  if (!usage || typeof usage !== 'object') return undefined;
+  if (provider === 'codex') {
+    const input = count(usage.input_tokens), cached = Math.min(count(usage.cached_input_tokens), input), output = count(usage.output_tokens);
+    if (!input && !output) return undefined;
+    return { inputTokens: input - cached, outputTokens: output, totalTokens: input + output, ...(cached ? { cacheReadTokens: cached } : {}), ...(count(usage.reasoning_output_tokens) ? { reasoningTokens: count(usage.reasoning_output_tokens) } : {}) };
+  }
+  const input = count(usage.input_tokens), read = count(usage.cache_read_input_tokens), write = count(usage.cache_creation_input_tokens), output = count(usage.output_tokens);
+  if (!input && !read && !write && !output) return undefined;
+  return { inputTokens: input, outputTokens: output, totalTokens: input + read + write + output, ...(read ? { cacheReadTokens: read } : {}), ...(write ? { cacheWriteTokens: write } : {}) };
 }
 
 const capped = value => typeof value === 'string' ? value.slice(0, MAX_TEXT) : '';
@@ -67,8 +87,8 @@ export async function runAgent({ images = [], ...options }) {
   }
 }
 
-async function runTurn({ provider, exe, env, cwd, permissionMode, threadId, ephemeral, signal, onEvent }, { input, imagePaths, streamInput }) {
-  const args = agentArgs(provider, { cwd, permissionMode, threadId, ephemeral, imagePaths, streamInput });
+async function runTurn({ provider, exe, env, cwd, permissionMode, model, threadId, ephemeral, signal, onEvent }, { input, imagePaths, streamInput }) {
+  const args = agentArgs(provider, { cwd, permissionMode, model, threadId, ephemeral, imagePaths, streamInput });
   if (signal?.aborted) throw new Error('Agent cancelled');
   if (typeof onEvent !== 'function') throw new Error('Agent event callback is required');
   const child = spawn(exe, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32', windowsHide: true });
@@ -275,7 +295,8 @@ async function runTurn({ provider, exe, env, cwd, permissionMode, threadId, ephe
     if (terminalError) throw new Error(terminalError);
     if (!terminal) throw new Error('CLI ended without a terminal turn result');
     if (!vendorId && !ephemeral) throw new Error('CLI did not identify its persistent thread');
-    return { ...(vendorId ? { threadId:vendorId } : {}), text, ...(usage ? { usage } : {}) };
+    const tokens = tokenUsage(provider, usage);
+    return { ...(vendorId ? { threadId:vendorId } : {}), text, ...(usage ? { usage } : {}), ...(tokens ? { tokens } : {}) };
   } finally {
     clearTimeout(timeout); clearTimeout(forceTimer);
     signal?.removeEventListener('abort', abort);
