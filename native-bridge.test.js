@@ -109,6 +109,7 @@ async function mainChat(t, runner = async (_id, opts) => {
     { id:claudeAccount,name:'Work',provider:'claude',number:2,models:[{ id:'claude-opus-5-5',name:'Opus 5.5',inputModalities:['text','image'],isDefault:true },{ id:'claude-haiku-5-5',name:'Haiku 5.5',inputModalities:['text','image'] }] },
   ];
   const bridge = await install(ctx,{
+    contextWindow: async (id,model) => id === claudeAccount && model === 'claude-haiku-5-5' ? 200000 : undefined,
     modelAccounts: provider => accounts.filter(a=>a.provider===provider),
     runAgentTurn(id,opts){ calls.push({ id,opts }); return runner(id,opts); },
   });
@@ -142,6 +143,7 @@ test('each account is its own provider listing the models its CLI reported', asy
   const claude = await adapter.listModels('dsh-subscription-claude-2');
   assert.deepEqual(claude.map(m=>[m.provider,m.id,m.name,m.inputModalities.join()]),[['dsh-subscription-claude-2','claude-opus-5-5','Opus 5.5','text,image'],['dsh-subscription-claude-2','claude-haiku-5-5','Haiku 5.5','text,image']]);
   assert.equal((await adapter.resolveModel('dsh-subscription-claude-2','claude-haiku-5-5')).name,'Haiku 5.5');
+  assert.equal((await adapter.resolveModel('dsh-subscription-claude-2','claude-haiku-5-5')).context.contextWindow,200000);
   await assert.rejects(adapter.resolveModel('dsh-subscription-claude-2','gpt-x'),/недоступна/);
   // A Codex account whose CLI has not listed models yet offers the CLI default.
   assert.deepEqual([...(await adapter.listModels('dsh-subscription-codex-1'))].map(m=>m.id),['default']);

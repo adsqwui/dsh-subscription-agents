@@ -1,7 +1,7 @@
 import { mkdir, chmod, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { cliEnv, command, executable, inference, run, subscribed, codexPrefix, callTimeout, claudeModels, claudeModelsRequest, claudeUsage, claudeUsageRequest } from './cli.js';
+import { cliEnv, command, executable, inference, run, subscribed, codexPrefix, callTimeout, claudeModels, claudeModelsRequest, claudeContextWindow, claudeUsage, claudeUsageRequest } from './cli.js';
 import { readCodexModels, readCodexUsage } from './codex-usage.js';
 import { runAgent } from './agent-runner.js';
 
@@ -62,6 +62,32 @@ export async function makeService(root, options = {}) {
     return discovered;
   }
   const dir = a => join(root, a.id);
+  const contextWindows = new Map();
+  async function contextWindow(id, model, signal) {
+    const account = db.accounts.find(a => a.id === id);
+    if (!account) return;
+    const key = JSON.stringify([id, model]);
+    const cached = contextWindows.get(key);
+    if (cached?.expires > Date.now()) return cached.value;
+    let value;
+    try {
+      if (account.provider === 'codex') {
+        const catalog = JSON.parse(await readFile(join(dir(account), 'models_cache.json'), 'utf8'));
+        const entry = catalog.models.find(row => row.slug === model);
+        if (!entry) return;
+        value = Math.floor(entry.context_window * (entry.effective_context_window_percent ?? 100) / 100);
+      } else {
+        const exe = (await availability()).claude;
+        if (!exe) return;
+        const args = [...command('claude','models'), ...(model ? ['--model', model] : [])];
+        const input = JSON.stringify({type:'control_request', request_id:'context', request:{subtype:'get_context_usage'}}) + '\n';
+        value = claudeContextWindow(await cliRun(exe,args,{cwd,env:cliEnv('claude',dir(account)),input,signal:signal ? AbortSignal.any([signal,life.signal]) : life.signal}));
+      }
+    } catch { /* Older CLIs may not provide capacity metadata. */ }
+    if (!Number.isSafeInteger(value) || value <= 0) return;
+    contextWindows.set(key, { value, expires: Date.now() + MODELS_FRESH });
+    return value;
+  }
   function view(a, user = false) {
     return Object.fromEntries(['id','number','provider','name','enabled','status','busy','note','usage','models','checkedAt','testPassed',...(user ? ['loginUrl'] : [])].filter(k=>a[k]!==undefined).map(k=>[k,a[k]]));
   }
@@ -286,7 +312,7 @@ export async function makeService(root, options = {}) {
     if (!result || result.ok === false) throw new Error(result?.error || 'CLI не завершил задачу.');
     return result;
   }
-  return {action, pick:provider=>{const a=pickAccount(db.accounts,provider);return a ? view(a) : undefined;}, modelAccounts, runAgentTurn,
+  return {action, pick:provider=>{const a=pickAccount(db.accounts,provider);return a ? view(a) : undefined;}, modelAccounts, contextWindow, runAgentTurn,
     hasEnabled:()=>db.accounts.some(a=>a.enabled && a.status==='ready'), async dispose(){clearInterval(interval);life.abort();await Promise.allSettled([...active.values()].map(w=>w.task)); await writes.catch(()=>{});} };
 }
 function cleanName(name) { return typeof name === 'string' ? name.replace(/[\x00-\x1f\x7f]/g,'').trim().slice(0,70) : ''; }

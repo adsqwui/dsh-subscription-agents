@@ -100,6 +100,11 @@ export function subscribed(provider, result) {
 }
 const CLAUDE_WINDOWS = { five_hour:'5 часов', seven_day:'7 дней', seven_day_sonnet:'Sonnet · 7 дней', seven_day_opus:'Opus · 7 дней' };
 export const claudeUsageRequest = JSON.stringify({ type:'control_request', request_id:'usage', request:{ subtype:'get_usage', skip_behaviors:true } }) + '\n';
+export function claudeContextWindow(result) {
+  if (result.code !== 0) return;
+  const reply = readEvents(result.stdout).find(e => e?.type === 'control_response' && e.response?.request_id === 'context')?.response;
+  if (reply?.subtype === 'success') return reply.response?.maxTokens;
+}
 export function claudeUsage(result) {
   if (result.code !== 0) return;
   const reply = readEvents(result.stdout).find(e => e?.type === 'control_response' && e.response?.request_id === 'usage')?.response;

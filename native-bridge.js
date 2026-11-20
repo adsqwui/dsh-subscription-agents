@@ -149,14 +149,16 @@ export async function installNativeBridge(ctx, service) {
       const account = accountOf(provider);
       return account ? catalogOf(account).map(model => modelInfo(provider,model)) : [];
     }
-    async resolveModel(provider, model) {
+    async resolveModel(provider, model, signal) {
       const parsed = parseRoute(provider);
       const account = parsed?.number === undefined ? service.modelAccounts(parsed?.provider).find(row => row.id === model) : accountOf(provider);
       if (!account) throw new Error('Подписочный аккаунт недоступен. Проверьте вход и переключатель в панели «Подписочные агенты».');
-      if (parsed.number === undefined) return legacyInfo(provider,account);
-      const entry = catalogOf(account).find(row => row.id === model);
-      if (!entry) throw new Error('Эта модель недоступна в подписке аккаунта. Выберите другую модель.');
-      return modelInfo(provider,entry);
+      const legacy = parsed.number === undefined;
+      const entry = legacy ? account.models?.find(row => row.isDefault) : catalogOf(account).find(row => row.id === model);
+      if (!legacy && !entry) throw new Error('Эта модель недоступна в подписке аккаунта. Выберите другую модель.');
+      const info = legacy ? legacyInfo(provider,account) : modelInfo(provider,entry);
+      const capacity = await service.contextWindow(account.id, entry?.id === DEFAULT_MODEL ? undefined : entry?.id, signal);
+      return capacity ? { ...info, context:{contextWindow:capacity} } : info;
     }
     async *stream(options) {
       if (options.purpose !== undefined) throw new Error('Subscription CLI does not handle auxiliary model requests.');
